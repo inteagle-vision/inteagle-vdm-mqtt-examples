@@ -1,0 +1,10 @@
+{
+  "compilerOptions": {
+    "module": "Node16",
+    "moduleResolution": "Node16",
+    "strict": true,
+    "target": "ES2022",
+    "types": ["node"]
+  },
+  "files": ["tests/types.test.ts"]
+}

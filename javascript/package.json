@@ -1,0 +1,25 @@
+{
+  "name": "@inteagle/vdm-mqtt-example",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Inteagle VDM MQTT JSON/Protobuf JavaScript SDK and example",
+  "main": "sdk/index.js",
+  "types": "sdk/index.d.ts",
+  "scripts": {
+    "check": "npm test && npm run typecheck",
+    "test": "node --test tests/*.test.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node consumer.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "mqtt": "5.15.2",
+    "protobufjs": "8.7.1"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.1",
+    "typescript": "7.0.2"
+  }
+}

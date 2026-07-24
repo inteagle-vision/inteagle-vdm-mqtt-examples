@@ -1,0 +1,605 @@
+syntax = "proto3";
+
+package inteagle.vdm.mqtt.v1;
+
+option java_multiple_files = true;
+option java_package = "com.inteagle.vdm.mqtt.v1";
+option csharp_namespace = "Inteagle.Vdm.Mqtt.V1";
+option go_package = "github.com/inteagle-vision/inteagle-vdm-mqtt-examples/go/generated;vdmmqttv1";
+
+// 客户接口契约 - 版本 1
+// ==================
+// 本文件是 NanoMQ 多语言联调示例、设备实现和客户下载包共同使用的唯一 Schema。
+// 版本 1 遵循以下演进规则：
+//
+//   * 已发布字段的编号和含义不得修改；
+//   * 删除字段时必须使用 reserved 保留原字段编号；
+//   * 新增可选字段必须使用新的字段编号；
+//   * 解析器必须拒绝不支持的 schema_version；
+//   * 解析器必须按照设备连接中选择的 Payload 格式解码，不得根据 payload
+//     字节猜测使用 JSON 还是 Protobuf。
+//
+// VDM 协议的默认 MQTT Topic 与根消息类型：
+//
+//   vdm/{deviceId}/telemetry  -> Telemetry       设备到云端
+//   vdm/{deviceId}/attributes -> Attributes      设备到云端
+//   vdm/{deviceId}/event      -> Event           设备到云端
+//   vdm/{deviceId}/3A         -> Alarm           设备到云端
+//   vdm/{deviceId}/rpc/req    -> RpcRequest              云端到设备
+//   vdm/{deviceId}/rpc/resp   -> RpcResponse             设备到云端
+//   vdm/{deviceId}/image      -> 不使用 Protobuf：VDM 图片 Header + JPEG bytes
+//
+// 时间戳约定：
+//
+//   以 `_s` 结尾的字段是 UTC Unix 秒时间戳，使用无符号整数。
+//   以 `_ms` 结尾的字段是 UTC Unix 毫秒时间戳，使用无符号整数。
+//
+// 单位约定：
+//
+//   位移使用毫米（mm），距离使用米（m），角度使用度（°），电压使用伏特（V），
+//   温度使用摄氏度（°C），湿度使用相对湿度百分比（%RH），气压使用百帕（hPa），
+//   LTE 信号强度使用 dBm。
+
+// Empty 用于没有请求参数或成功响应数据的 RPC，因此不包含任何字段。
+message Empty {}
+
+// 标靶角色枚举。值 0 不能作为有效的已配置角色。
+enum TargetRole {
+  TARGET_ROLE_UNSPECIFIED = 0;
+  TARGET_ROLE_MP = 1; // 测点（Measuring Point），新增标靶的默认角色。
+  TARGET_ROLE_RP = 2; // 稳定基准点（Reference Point）。
+  TARGET_ROLE_CP = 3; // 控制点或校核点（Control/Check Point）。
+}
+
+// 标靶铭牌上标识的物理型号。
+enum TargetModel {
+  TARGET_MODEL_UNSPECIFIED = 0;
+  TARGET_MODEL_T10 = 1;
+  TARGET_MODEL_T20 = 2;
+  TARGET_MODEL_T50 = 3;
+  TARGET_MODEL_T100 = 4;
+  TARGET_MODEL_T200 = 5;
+}
+
+// attributes 上报的测量状态。
+enum MeasurementStatus {
+  MEASUREMENT_STATUS_UNSPECIFIED = 0;
+  MEASUREMENT_STATUS_IDLE = 1;
+  MEASUREMENT_STATUS_RUNNING = 2;
+}
+
+// 客户可通过 setAttr.report_metrics 配置的上报指标。
+enum ReportMetric {
+  REPORT_METRIC_UNSPECIFIED = 0;
+  REPORT_METRIC_DX = 1;
+  REPORT_METRIC_DY = 2;
+  REPORT_METRIC_DZ = 3;
+  REPORT_METRIC_TILT = 4;
+  REPORT_METRIC_SX = 5;
+  REPORT_METRIC_SY = 6;
+  REPORT_METRIC_SZ = 7;
+}
+
+// 原始相机画面坐标系中的像素矩形。
+message Roi {
+  uint32 x = 1;      // 左边界像素坐标。
+  uint32 y = 2;      // 上边界像素坐标。
+  uint32 width = 3;  // 宽度，单位像素，必须大于 0。
+  uint32 height = 4; // 高度，单位像素，必须大于 0。
+}
+
+// getTargets 响应和 attributes 上报使用的完整公开标靶结构。
+message TargetInfo {
+  string target_id = 1;              // UTF-8；去除前后空白后长度为 1..64 字节。
+  uint32 sensor_id = 2;              // 单目设备通常为 0；双目设备使用 0 或 1。
+  Roi roi = 3;                       // 标靶在原始相机画面中的区域。
+  float distance_m = 4;              // 标靶到设备的距离，必须 >= 0.1 m。
+  TargetRole role = 5;
+  TargetModel target_model = 6;
+  bool skip_measurement = 7;
+  bool initialized = 8;
+  optional uint64 initialized_at_s = 9; // 没有初始化记录时不设置该字段。
+}
+
+message TargetList {
+  repeated TargetInfo targets = 1; // 设备上报时按稳定的 target_id 顺序排列。
+}
+
+// 单个标靶的一批客户位移数据。数组按采集顺序排列；设备只上报该型号实际支持
+// 的方向，不支持、未配置或当前没有数据的方向保持空数组。三个方向全部为空时，
+// 设备不添加该标靶。
+message TargetDisplacementSeries {
+  string target_id = 1;
+  reserved 2, 5 to 8;
+  repeated float dx_mm = 3 [packed = true];
+  repeated float dy_mm = 4 [packed = true];
+  repeated float dz_mm = 9 [packed = true];
+}
+
+// 位移批次。非空方向数组使用同一采样时间网格，第 i 个样本的时间约为：
+//
+//   first_sample_timestamp_ms + round(i * 1000 / sample_frequency_hz)
+message DisplacementTelemetry {
+  uint32 sample_frequency_hz = 1; // 采样频率，整数，范围 1..60 Hz。
+  repeated TargetDisplacementSeries targets = 2; // 按 target_id 排序。
+  reserved 3;
+  uint64 first_sample_timestamp_ms = 4; // 本批次首个样本的 UTC Unix 毫秒时间戳。
+}
+
+// 环境传感器数据。字段缺失与数值 0 含义不同，因此各传感器数值均为 optional。
+message EnvironmentTelemetry {
+  uint64 timestamp_s = 1;
+  optional float temperature_c = 2;
+  optional float humidity_percent_rh = 3;
+  optional float pressure_hpa = 4;
+}
+
+// 不属于环境传感器的设备运行状态数据。
+message DeviceStatusTelemetry {
+  uint64 timestamp_s = 1;
+  optional float cpu_usage_percent = 2;
+  optional sint32 lte_dbm = 3;
+  optional double input_voltage_v = 4;
+  optional double battery_voltage_v = 5;
+  reserved 6 to 10;
+}
+
+// 必须至少设置一种遥测消息体。同一个设备状态样本可同时包含环境数据和运行状态，
+// 因此 environment 与 device_status 可以同时存在；displacement 通常单独上报。
+message Telemetry {
+  uint32 schema_version = 1; // 当前包必须设置为 1。
+  optional DisplacementTelemetry displacement = 10;
+  optional EnvironmentTelemetry environment = 11;
+  optional DeviceStatusTelemetry device_status = 12;
+}
+
+message ReportMetricList {
+  repeated ReportMetric values = 1;
+}
+
+// 首次属性上报可设置大部分字段，增量属性上报只设置发生变化的字段。消息 presence
+// 用于区分“未上报标靶变化”和“明确上报空标靶列表”。
+message Attributes {
+  uint32 schema_version = 1; // 当前版本必须设置为 1。
+  optional string device_id = 2;
+  optional string device_model = 3;
+  optional string firmware_version = 4;
+  optional string resolution = 5; // 格式为 WIDTHxHEIGHT，例如 3840x2160。
+  optional MeasurementStatus measurement_status = 6;
+  optional uint32 sample_frequency_hz = 7;
+  optional ReportMetricList report_metrics = 8;
+  optional bool show_roi = 9;
+  optional bool show_timestamp = 10;
+  optional bool show_sensor_id = 11;
+  optional TargetList target_list = 12;
+}
+
+// DynamicValue 仅用于文档明确允许的扩展字段。已知的 RPC、遥测、属性和告警字段
+// 必须使用具体类型。解析器必须限制：最大嵌套深度 8，列表或对象最多 128 项，
+// MQTT RPC payload 最大 64 KiB，每个 string/bytes 最大 4 KiB；若具体方法规定
+// 更小的限制，则以具体方法为准。
+message DynamicValue {
+  oneof kind {
+    NullValue null_value = 1;
+    bool bool_value = 2;
+    sint64 signed_value = 3;
+    uint64 unsigned_value = 4;
+    double double_value = 5;
+    string string_value = 6;
+    bytes bytes_value = 7;
+    DynamicList list_value = 8;
+    DynamicObject object_value = 9;
+  }
+}
+
+enum NullValue {
+  NULL_VALUE = 0;
+}
+
+message DynamicList {
+  repeated DynamicValue values = 1;
+}
+
+message DynamicObjectEntry {
+  string key = 1;
+  DynamicValue value = 2;
+}
+
+message DynamicObject {
+  // key 必须唯一。需要确定性输出用于基准或重试比较时，应按 UTF-8 key 字节排序。
+  repeated DynamicObjectEntry entries = 1;
+}
+
+enum EventType {
+  EVENT_TYPE_UNSPECIFIED = 0;
+  EVENT_TYPE_INIT_REFERENCE_TARGET = 1;
+  EVENT_TYPE_CRUISE_POINT_REACHED = 2;
+  EVENT_TYPE_TARGET_LOST = 3;
+  EVENT_TYPE_TARGET_TRACKING_STATUS_CHANGED = 4;
+  EVENT_TYPE_LOW_BATTERY = 5;
+  EVENT_TYPE_SENSOR_FAILURE = 6;
+  EVENT_TYPE_CALIBRATION_ERROR = 7;
+  EVENT_TYPE_CALIBRATION_REQUIRED = 8;
+  EVENT_TYPE_FACTORY_CALIBRATION = 9;
+  EVENT_TYPE_COMMAND_ERROR = 10;
+  EVENT_TYPE_QUALITY_DETECTION_STATUS = 11;
+}
+
+message TargetInitializationFailure {
+  string target_id = 1;
+  int32 code = 2;
+  string message = 3;
+}
+
+message InitReferenceTargetEvent {
+  repeated string successful_target_ids = 1;
+  repeated TargetInitializationFailure failed_targets = 2;
+}
+
+message CruisePointReachedEvent {
+  optional uint32 path_id = 1;
+  optional uint32 point_id = 2;
+  optional float pan_degrees = 3;
+  optional float tilt_degrees = 4;
+}
+
+message TargetEvent {
+  string target_id = 1;
+  optional string status = 2; // 状态值允许扩展，具体取值以事件文档为准。
+}
+
+// event_type 必须与 detail oneof 中的字段一致。仅当事件尚未定义稳定的明细结构时，
+// 才允许使用 extension。
+message Event {
+  uint32 schema_version = 1;
+  uint64 timestamp_s = 2;
+  EventType event_type = 3;
+  optional string message = 4;
+  oneof detail {
+    InitReferenceTargetEvent init_reference_target = 10;
+    CruisePointReachedEvent cruise_point_reached = 11;
+    TargetEvent target = 12;
+    DynamicObject extension = 100;
+  }
+}
+
+enum AlarmType {
+  ALARM_TYPE_UNSPECIFIED = 0;
+  ALARM_TYPE_DISPLACEMENT_LIMIT = 1;      // 对应 JSON：DISP_LIMIT。
+  ALARM_TYPE_DISPLACEMENT_RATE_LIMIT = 2; // 对应 JSON：DISP_RATE。
+  ALARM_TYPE_TARGET_LOST = 3;
+  ALARM_TYPE_INPUT_VOLTAGE_LOW = 4;       // 对应 JSON：VIN_LOW。
+  ALARM_TYPE_BATTERY_VOLTAGE_LOW = 5;     // 对应 JSON：VBAT_LOW。
+}
+
+enum AlarmLevel {
+  ALARM_LEVEL_UNSPECIFIED = 0;
+  ALARM_LEVEL_ALERT = 1;
+  ALARM_LEVEL_ALARM = 2;
+  ALARM_LEVEL_ACTION = 3;
+}
+
+enum AlarmTransition {
+  ALARM_TRANSITION_UNSPECIFIED = 0;
+  ALARM_TRANSITION_TRIGGERED = 1;
+  ALARM_TRANSITION_ESCALATED = 2;
+  ALARM_TRANSITION_DEESCALATED = 3;
+  ALARM_TRANSITION_RECOVERED = 4;
+  ALARM_TRANSITION_CANCELLED = 5;
+  ALARM_TRANSITION_SYNCED = 6;
+}
+
+enum AlarmMetric {
+  ALARM_METRIC_UNSPECIFIED = 0;
+  ALARM_METRIC_DX = 1;
+  ALARM_METRIC_DY = 2;
+  ALARM_METRIC_MAGNITUDE_2D = 3;
+}
+
+enum DisplacementDirection {
+  DISPLACEMENT_DIRECTION_UNSPECIFIED = 0;
+  DISPLACEMENT_DIRECTION_POSITIVE = 1;
+  DISPLACEMENT_DIRECTION_NEGATIVE = 2;
+  DISPLACEMENT_DIRECTION_BIDIRECTIONAL = 3;
+}
+
+message DisplacementAlarmDetail {
+  string target_id = 1;
+  AlarmMetric metric = 2;
+  DisplacementDirection direction = 3;
+  optional float value_mm = 4;
+  optional float limit_mm = 5;
+}
+
+message DisplacementRateAlarmDetail {
+  string target_id = 1;
+  AlarmMetric metric = 2;
+  DisplacementDirection direction = 3;
+  optional float value = 4;
+  optional float limit = 5;
+  string unit = 6; // 取值为 mm/s、mm/h 或 mm/day。
+  uint32 window_ms = 7;
+}
+
+message TargetLostAlarmDetail {
+  string target_id = 1;
+}
+
+message VoltageAlarmDetail {
+  optional float value_v = 1;
+  optional float limit_v = 2;
+}
+
+// event_id 和 alarm_id 使用 uint64，Protobuf 可直接保持整数精度，无需编码为字符串。
+// transition 为 RECOVERED 或 CANCELLED 时不设置 level，表示告警已无当前等级。
+message Alarm {
+  uint32 schema_version = 1;
+  uint64 event_id = 2;
+  uint64 alarm_id = 3;
+  uint32 rule_id = 4;
+  AlarmType alarm_type = 5;
+  optional AlarmLevel level = 6;
+  AlarmTransition transition = 7;
+  uint64 timestamp_s = 8;
+  oneof detail {
+    DisplacementAlarmDetail displacement = 10;
+    DisplacementRateAlarmDetail displacement_rate = 11;
+    TargetLostAlarmDetail target_lost = 12;
+    VoltageAlarmDetail voltage = 13;
+  }
+}
+
+// RPC -----------------------------------------------------------------------
+// req_id 是调用方生成的非零 32-bit signed 请求关联 ID。设备必须在 RpcResponse
+// 中原样返回。值 0 仅用于无法关联到有效请求的边界错误。同一个方法在 request 和
+// response oneof 中使用相同字段编号。每条请求必须且只能设置一种请求消息体。
+//
+// 下方 oneof 为 vdm_api_docs 支持矩阵中的每个公开方法保留稳定字段。当前固件或
+// 硬件型号不具备某项能力时，该方法仍可返回非零 code。设备内部存在的命令不会
+// 因此自动成为客户公开 RPC。
+
+message GetAttributesRequest {
+  // 空列表表示获取全部基础属性；非空时最多包含 32 个互不重复的已公开字段名。
+  repeated string keys = 1;
+}
+
+message SetAttributesRequest {
+  optional uint32 sample_frequency_hz = 1; // 范围 1..60 Hz。
+  optional ReportMetricList report_metrics = 2;
+  optional bool show_roi = 3;
+  optional bool show_timestamp = 4;
+  optional bool show_sensor_id = 5;
+}
+
+message SyncTimeRequest {
+  optional string ntp_server = 1; // 最长 253 字节，不允许空白；默认 ntp.aliyun.com。
+}
+
+message InitReferenceTarget {
+  string target_id = 1;
+  optional uint32 sensor_id = 2;
+  optional Roi roi = 3;
+  optional float distance_m = 4;
+  optional TargetModel target_model = 5;
+}
+
+message InitReferenceTargetsRequest {
+  repeated InitReferenceTarget targets = 1; // 包含 1..128 个互不重复的标靶 ID。
+}
+
+message AddTarget {
+  optional string target_id = 1; // 未设置时由设备生成 UUID。
+  optional uint32 sensor_id = 2; // 双目产品必须设置。
+  Roi roi = 3;
+  float distance_m = 4;
+  optional TargetRole role = 5; // 未设置时默认为 MP。
+  optional TargetModel target_model = 6; // 未设置时默认为 T100。
+  optional bool skip_measurement = 7; // 未设置时默认为 false。
+}
+
+message AddTargetsRequest {
+  repeated AddTarget targets = 1; // 包含 1..128 项；显式提供的 ID 必须互不重复。
+}
+
+message SetTarget {
+  string target_id = 1;
+  optional uint32 sensor_id = 2;
+  optional Roi roi = 3;
+  optional float distance_m = 4;
+  optional TargetRole role = 5;
+  optional TargetModel target_model = 6;
+  optional bool skip_measurement = 7;
+}
+
+message SetTargetsRequest {
+  repeated SetTarget targets = 1; // 包含 1..128 项；每项至少设置一个待更新字段。
+}
+
+message DeleteTargetsRequest {
+  repeated string target_ids = 1; // 包含 1..128 个互不重复的 ID。
+}
+
+message LightLevel {
+  uint32 light_id = 1;
+  uint32 level = 2; // 整数挡位，范围 0..8。
+}
+
+message LightLevelList {
+  repeated LightLevel lights = 1; // 包含 1..16 个互不重复的补光灯 ID。
+}
+
+message SetLightLevelRequest {
+  oneof selection {
+    uint32 all_lights_level = 1; // 所有补光灯的整数挡位，范围 0..8。
+    LightLevelList per_light = 2;
+  }
+}
+
+message SnapshotRequest {
+  optional uint32 sensor_id = 1; // 单目产品未设置时默认为 0。
+}
+
+// 存储查询沿用公开接口中的 RFC3339/ISO8601 时间字符串，必须包含明确的时区偏移。
+message QueryTelemetryRequest {
+  string start_time = 1;
+  string end_time = 2;
+  repeated string target_ids = 3;
+}
+
+// uploadS3 在 vdm_api_docs 中尚未形成稳定的字段级契约。params 只保存文档已公开
+// 的对象，并受上方 DynamicObject 限制。将来新增强类型请求时必须使用新字段编号，
+// 不得直接改变本消息的含义。
+message UploadS3Request {
+  DynamicObject params = 1;
+}
+
+// ISP 不同 action 使用不同参数。action 字段保持稳定，options 保存文档中该 action
+// 的其余参数，例如 flip、mirror、rotation。
+message IspControlRequest {
+  string action = 1;
+  DynamicObject options = 2;
+}
+
+message SetMotorAngleRequest {
+  optional float pan_degrees = 1;
+  optional float tilt_degrees = 2;
+  optional uint32 speed_percent = 3; // 范围 1..100；未设置时使用设备默认速度。
+  optional bool relative = 4;
+}
+
+message SetMotorZeroRequest {
+  optional bool pan = 1;
+  optional bool tilt = 2;
+}
+
+message GetCruisePathsRequest {
+  optional bool include_targets = 1; // 未设置时默认为 true。
+}
+
+message SetCruisePointRequest {
+  uint32 path_id = 1;
+  uint32 point_id = 2;
+  float pan_degrees = 3;
+  optional float tilt_degrees = 4; // 单轴产品不设置该字段。
+  repeated string target_ids = 5;
+  optional uint32 dwell_time_s = 6;
+}
+
+message RemoveCruisePointRequest {
+  uint32 path_id = 1;
+  optional uint32 point_id = 2;
+  repeated string target_ids = 3;
+}
+
+message StartPatrolRequest {
+  optional uint32 path_id = 1;
+}
+
+message RpcRequest {
+  uint32 schema_version = 1; // 当前版本必须设置为 1。
+  int32 req_id = 2;
+  oneof request {
+    GetAttributesRequest get_attr = 10;
+    SetAttributesRequest set_attr = 11;
+    Empty reboot = 12;
+    SyncTimeRequest sync_time = 13;
+    InitReferenceTargetsRequest init_ref_targets = 20;
+    AddTargetsRequest add_targets = 21;
+    Empty get_targets = 22;
+    SetTargetsRequest set_targets = 23;
+    DeleteTargetsRequest delete_targets = 24;
+    Empty start_measurement = 30;
+    Empty stop_measurement = 31;
+    SetLightLevelRequest set_light_level = 32;
+    Empty get_light_level = 33;
+    SnapshotRequest snapshot = 34;
+    Empty get_storage_info = 40;
+    QueryTelemetryRequest query_telemetry = 41;
+    UploadS3Request upload_s3 = 42;
+    IspControlRequest isp_ctl = 50;
+    SetMotorAngleRequest set_motor_angle = 60;
+    Empty get_motor_angle = 61;
+    SetMotorZeroRequest set_motor_zero = 62;
+    Empty enable_motor = 63;
+    Empty disable_motor = 64;
+    GetCruisePathsRequest get_cruise_paths = 70;
+    SetCruisePointRequest set_cruise_point = 71;
+    RemoveCruisePointRequest remove_cruise_point = 72;
+    StartPatrolRequest start_patrol = 73;
+    Empty stop_patrol = 74;
+    Empty get_patrol_status = 75;
+  }
+}
+
+message GetAttributesResponse {
+  Attributes attributes = 1;
+}
+
+message AddTargetsResponse {
+  repeated string added_target_ids = 1;
+}
+
+message GetTargetsResponse {
+  repeated TargetInfo targets = 1;
+}
+
+message GetLightLevelResponse {
+  oneof selection {
+    uint32 all_lights_level = 1;
+    LightLevelList per_light = 2;
+  }
+}
+
+// 以下响应保留文档中的结果对象，不为 vdm_api_docs 尚未稳定的结构自行定义字段。
+message DynamicObjectResponse {
+  DynamicObject data = 1;
+}
+
+message DynamicValueResponse {
+  DynamicValue data = 1;
+}
+
+message GetMotorAngleResponse {
+  optional float pan_degrees = 1;
+  optional float tilt_degrees = 2;
+}
+
+// code != 0 时可以不设置 response，message 提供可读的错误原因。code == 0 时
+// 必须选择该方法对应的 response 字段；无响应数据的方法也必须选择 Empty 字段。
+message RpcResponse {
+  uint32 schema_version = 1; // 当前版本必须设置为 1。
+  int32 req_id = 2;
+  int32 code = 3; // 0 表示成功；非 0 表示设备返回错误。
+  string message = 4;
+  oneof response {
+    GetAttributesResponse get_attr = 10;
+    Empty set_attr = 11;
+    Empty reboot = 12;
+    Empty sync_time = 13;
+    Empty init_ref_targets = 20;
+    AddTargetsResponse add_targets = 21;
+    GetTargetsResponse get_targets = 22;
+    Empty set_targets = 23;
+    Empty delete_targets = 24;
+    Empty start_measurement = 30;
+    Empty stop_measurement = 31;
+    Empty set_light_level = 32;
+    GetLightLevelResponse get_light_level = 33;
+    Empty snapshot = 34;
+    DynamicObjectResponse get_storage_info = 40;
+    DynamicObjectResponse query_telemetry = 41;
+    DynamicObjectResponse upload_s3 = 42;
+    DynamicObjectResponse isp_ctl = 50;
+    Empty set_motor_angle = 60;
+    GetMotorAngleResponse get_motor_angle = 61;
+    Empty set_motor_zero = 62;
+    Empty enable_motor = 63;
+    Empty disable_motor = 64;
+    DynamicValueResponse get_cruise_paths = 70;
+    Empty set_cruise_point = 71;
+    Empty remove_cruise_point = 72;
+    Empty start_patrol = 73;
+    Empty stop_patrol = 74;
+    DynamicObjectResponse get_patrol_status = 75;
+  }
+}

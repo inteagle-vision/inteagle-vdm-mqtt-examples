@@ -1,0 +1,236 @@
+package com.inteagle.vdm.mqtt.sdk;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.google.protobuf.Descriptors.FieldDescriptor;
+import com.google.protobuf.Descriptors.OneofDescriptor;
+import com.google.protobuf.DynamicMessage;
+import com.google.protobuf.Message;
+import com.google.protobuf.util.JsonFormat;
+import com.inteagle.vdm.mqtt.v1.Alarm;
+import com.inteagle.vdm.mqtt.v1.Attributes;
+import com.inteagle.vdm.mqtt.v1.Event;
+import com.inteagle.vdm.mqtt.v1.RpcRequest;
+import com.inteagle.vdm.mqtt.v1.RpcResponse;
+import com.inteagle.vdm.mqtt.v1.Telemetry;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.util.Arrays;
+import java.util.Map;
+
+/** VDM Topic、JSON/Protobuf 和图片 Payload 编解码。 */
+public final class VdmCodec {
+  public static final int SCHEMA_VERSION = 1;
+
+  private static final Map<String, String> PUBLIC_RPC_FIELDS = Map.ofEntries(
+      Map.entry("getAttr", "get_attr"),
+      Map.entry("setAttr", "set_attr"),
+      Map.entry("reboot", "reboot"),
+      Map.entry("syncTime", "sync_time"),
+      Map.entry("initRefTargets", "init_ref_targets"),
+      Map.entry("addTargets", "add_targets"),
+      Map.entry("getTargets", "get_targets"),
+      Map.entry("setTargets", "set_targets"),
+      Map.entry("deleteTargets", "delete_targets"),
+      Map.entry("startMeasurement", "start_measurement"),
+      Map.entry("stopMeasurement", "stop_measurement"),
+      Map.entry("setLightLevel", "set_light_level"),
+      Map.entry("getLightLevel", "get_light_level"),
+      Map.entry("snapshot", "snapshot"),
+      Map.entry("getStorageInfo", "get_storage_info"),
+      Map.entry("queryTelemetry", "query_telemetry"),
+      Map.entry("uploadS3", "upload_s3"),
+      Map.entry("ispCtl", "isp_ctl"),
+      Map.entry("setMotorAngle", "set_motor_angle"),
+      Map.entry("getMotorAngle", "get_motor_angle"),
+      Map.entry("setMotorZero", "set_motor_zero"),
+      Map.entry("enableMotor", "enable_motor"),
+      Map.entry("disableMotor", "disable_motor"),
+      Map.entry("getCruisePaths", "get_cruise_paths"),
+      Map.entry("setCruisePoint", "set_cruise_point"),
+      Map.entry("removeCruisePoint", "remove_cruise_point"),
+      Map.entry("startPatrol", "start_patrol"),
+      Map.entry("stopPatrol", "stop_patrol"),
+      Map.entry("getPatrolStatus", "get_patrol_status"));
+
+  public record RpcEncoding(byte[] payload, String expectedResponseField) {
+    public RpcEncoding {
+      payload = payload.clone();
+    }
+
+    @Override
+    public byte[] payload() {
+      return payload.clone();
+    }
+  }
+
+  public record ResponseInfo(int reqId, int code, String message, String responseField) {}
+
+  private final PayloadFormat format;
+  private final ObjectMapper objectMapper;
+
+  public VdmCodec(PayloadFormat format) {
+    this(format, new ObjectMapper());
+  }
+
+  public VdmCodec(PayloadFormat format, ObjectMapper objectMapper) {
+    if (format == null || objectMapper == null) {
+      throw new IllegalArgumentException("format 和 objectMapper 不能为空");
+    }
+    this.format = format;
+    this.objectMapper = objectMapper;
+  }
+
+  public PayloadFormat format() {
+    return format;
+  }
+
+  public DecodedPayload decode(String topic, VdmTopics topics, byte[] payload) throws Exception {
+    String suffix = topics.suffix(topic);
+    Object value;
+    JsonNode data;
+    if (suffix.equals("image")) {
+      ImageFrame image = decodeImage(payload);
+      value = image;
+      ObjectNode node = objectMapper.createObjectNode();
+      node.put("version", image.version());
+      node.put("headerLength", image.headerLength());
+      node.put("sensorId", image.sensorId());
+      node.put("imageType", image.imageType());
+      node.put("timestampS", image.timestampS());
+      node.put("jpegBytes", image.jpeg().length);
+      data = node;
+    } else if (format == PayloadFormat.JSON) {
+      data = objectMapper.readTree(payload);
+      if (data == null || !data.isObject()) {
+        throw new IllegalArgumentException("JSON 根节点必须是对象");
+      }
+      value = data;
+    } else {
+      Message message = parseProtobuf(suffix, payload);
+      int version = schemaVersion(message);
+      if (version != SCHEMA_VERSION) {
+        throw new IllegalArgumentException("不支持 schema_version=" + version);
+      }
+      value = message;
+      data = objectMapper.readTree(JsonFormat.printer().print(message));
+    }
+    return new DecodedPayload(topic, suffix, payload, value, data);
+  }
+
+  public RpcEncoding encodeRpcRequest(String method, Map<String, ?> params, int reqId)
+      throws Exception {
+    if (reqId == 0) {
+      throw new IllegalArgumentException("reqId 必须是非零 signed int32");
+    }
+    String fieldName = PUBLIC_RPC_FIELDS.get(method);
+    if (fieldName == null) {
+      throw new IllegalArgumentException("RPC 方法不属于公开 VDM API: " + method);
+    }
+    Map<String, ?> values = params == null ? Map.of() : params;
+    if (format == PayloadFormat.JSON) {
+      byte[] payload = objectMapper.writeValueAsBytes(Map.of(
+          "reqId", reqId, "method", method, "params", values));
+      return new RpcEncoding(payload, fieldName);
+    }
+
+    RpcRequest.Builder request = RpcRequest.newBuilder()
+        .setSchemaVersion(SCHEMA_VERSION)
+        .setReqId(reqId);
+    FieldDescriptor field = RpcRequest.getDescriptor().findFieldByName(fieldName);
+    if (field == null) {
+      throw new IllegalStateException("Schema 缺少 RPC request field: " + fieldName);
+    }
+    DynamicMessage.Builder body = DynamicMessage.newBuilder(field.getMessageType());
+    JsonFormat.parser().merge(objectMapper.writeValueAsString(values), body);
+    request.setField(field, body.build());
+    return new RpcEncoding(request.build().toByteArray(), fieldName);
+  }
+
+  public ResponseInfo responseInfo(Object value) {
+    if (value instanceof RpcResponse response) {
+      OneofDescriptor responseOneof = RpcResponse.getDescriptor().getOneofs().stream()
+          .filter(oneof -> oneof.getName().equals("response"))
+          .findFirst()
+          .orElseThrow(() -> new IllegalStateException("Schema 缺少 RPC response oneof"));
+      FieldDescriptor selected = response.getOneofFieldDescriptor(responseOneof);
+      return new ResponseInfo(
+          response.getReqId(),
+          response.getCode(),
+          response.getMessage(),
+          selected == null ? null : selected.getName());
+    }
+    if (!(value instanceof JsonNode node) || !node.isObject()) {
+      throw new IllegalArgumentException("RPC 响应类型错误");
+    }
+    JsonNode reqNode = node.has("reqId") ? node.get("reqId") : node.get("req_id");
+    if (reqNode == null || !reqNode.canConvertToInt()) {
+      throw new IllegalArgumentException("JSON RPC 响应缺少 reqId");
+    }
+    int code = parseCode(node.get("code"));
+    JsonNode messageNode = node.has("msg") ? node.get("msg") : node.get("message");
+    return new ResponseInfo(
+        reqNode.intValue(), code, messageNode == null ? "" : messageNode.asText(), null);
+  }
+
+  private static int parseCode(JsonNode node) {
+    if (node == null) {
+      return 1;
+    }
+    if (node.canConvertToInt()) {
+      return node.intValue();
+    }
+    String value = node.asText();
+    return value.equals("0") || value.equalsIgnoreCase("ok") || value.equalsIgnoreCase("success")
+        ? 0 : 1;
+  }
+
+  private static Message parseProtobuf(String suffix, byte[] payload) throws Exception {
+    return switch (suffix) {
+      case "telemetry" -> Telemetry.parseFrom(payload);
+      case "attributes" -> Attributes.parseFrom(payload);
+      case "event" -> Event.parseFrom(payload);
+      case "3A" -> Alarm.parseFrom(payload);
+      case "rpc/req" -> RpcRequest.parseFrom(payload);
+      case "rpc/resp" -> RpcResponse.parseFrom(payload);
+      default -> throw new IllegalArgumentException("未支持的 Topic: " + suffix);
+    };
+  }
+
+  private static int schemaVersion(Message message) {
+    return switch (message) {
+      case Telemetry value -> value.getSchemaVersion();
+      case Attributes value -> value.getSchemaVersion();
+      case Event value -> value.getSchemaVersion();
+      case Alarm value -> value.getSchemaVersion();
+      case RpcRequest value -> value.getSchemaVersion();
+      case RpcResponse value -> value.getSchemaVersion();
+      default -> throw new IllegalArgumentException("Protobuf 消息未声明 schema_version");
+    };
+  }
+
+  private static ImageFrame decodeImage(byte[] payload) {
+    if (payload.length < 10) {
+      throw new IllegalArgumentException("图片 Payload 小于 VDM Header 与 JPEG 最小长度");
+    }
+    int headerLength = Byte.toUnsignedInt(payload[1]);
+    if (headerLength < 8 || headerLength > payload.length) {
+      throw new IllegalArgumentException("非法图片 Header 长度: " + headerLength);
+    }
+    if (headerLength + 2 > payload.length
+        || Byte.toUnsignedInt(payload[headerLength]) != 0xff
+        || Byte.toUnsignedInt(payload[headerLength + 1]) != 0xd8) {
+      throw new IllegalArgumentException("图片数据不是 JPEG");
+    }
+    long timestamp = Integer.toUnsignedLong(
+        ByteBuffer.wrap(payload, 4, 4).order(ByteOrder.BIG_ENDIAN).getInt());
+    return new ImageFrame(
+        Byte.toUnsignedInt(payload[0]),
+        headerLength,
+        Byte.toUnsignedInt(payload[2]),
+        Byte.toUnsignedInt(payload[3]),
+        timestamp,
+        Arrays.copyOfRange(payload, headerLength, payload.length));
+  }
+}
