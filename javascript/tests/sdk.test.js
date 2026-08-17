@@ -1,6 +1,7 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const crypto = require("node:crypto");
 const test = require("node:test");
 
 const {
@@ -17,9 +18,9 @@ test("Topic 映射并拒绝通配符", () => {
   assert.throws(() => VdmTopics.forDevice("bad/#"));
 });
 
-test("29 个公开 RPC 都构造强类型 oneof", () => {
+test("32 个公开 RPC 都构造强类型 oneof", () => {
   const codec = new VdmCodec("protobuf");
-  assert.equal(Object.keys(PUBLIC_RPC_FIELDS).length, 29);
+  assert.equal(Object.keys(PUBLIC_RPC_FIELDS).length, 32);
   let reqId = 100;
   for (const [method, field] of Object.entries(PUBLIC_RPC_FIELDS)) {
     const encoded = codec.encodeRpcRequest(method, {}, reqId++);
@@ -68,6 +69,30 @@ test("解析图片 Header 并保留 JPEG", () => {
   const image = VdmCodec.decodeImage(payload);
   assert.equal(image.timestampS, 123);
   assert.deepEqual(image.jpeg, Buffer.from([0xff, 0xd8, 0xff, 0xd9]));
+});
+
+test("严格解析类型 2 告警证据分块", () => {
+  const jpeg = Buffer.from([0xff, 0xd8, 0x76, 0x64, 0x6d, 0xff, 0xd9]);
+  const payload = Buffer.alloc(112 + jpeg.length);
+  payload.set([2, 112, 1, 1]);
+  payload.writeBigUInt64BE(1721805600000n, 4);
+  payload.writeBigUInt64BE(9001n, 12);
+  payload.writeUInt16BE(0, 20);
+  payload.writeUInt16BE(1, 22);
+  payload.writeInt32BE(-1000, 24);
+  payload.writeUInt32BE(jpeg.length, 28);
+  crypto.createHash("sha256").update(jpeg).digest().copy(payload, 32);
+  crypto.createHash("sha256").update("manifest").digest().copy(payload, 64);
+  payload.writeUInt16BE(0, 96);
+  payload.writeUInt16BE(1, 98);
+  payload.writeUInt32BE(0, 100);
+  payload.writeUInt32BE(jpeg.length, 104);
+  jpeg.copy(payload, 112);
+  const chunk = VdmCodec.decodeImage(payload);
+  assert.equal(chunk.messageType, 2);
+  assert.equal(chunk.eventId, "9001");
+  assert.equal(chunk.actualOffsetMs, -1000);
+  assert.deepEqual(chunk.chunk, jpeg);
 });
 
 test("不同云客户端实例不共享 RPC pending 表", () => {

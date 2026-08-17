@@ -205,6 +205,56 @@ class VdmMqttClient:
                 if self._pending.get(req_id) is pending:
                     self._pending.pop(req_id, None)
 
+    def get_evidence_status(self, event_id: int, *, timeout: float = 10.0) -> DecodedPayload:
+        kind = (
+            "EVIDENCE_KIND_SNAPSHOT"
+            if self.config.payload_format is PayloadFormat.PROTOBUF
+            else "SNAPSHOT"
+        )
+        return self.call(
+            "getEvidenceStatus",
+            {"eventId": str(event_id), "kind": kind},
+            timeout=timeout,
+        )
+
+    def retry_evidence(self, event_id: int, *, timeout: float = 10.0) -> DecodedPayload:
+        kind = (
+            "EVIDENCE_KIND_SNAPSHOT"
+            if self.config.payload_format is PayloadFormat.PROTOBUF
+            else "SNAPSHOT"
+        )
+        return self.call(
+            "retryEvidence",
+            {"eventId": str(event_id), "kind": kind},
+            timeout=timeout,
+        )
+
+    def ack_evidence_images(
+        self,
+        event_id: int,
+        manifest_sha256: str,
+        *,
+        timeout: float = 10.0,
+    ) -> DecodedPayload:
+        if len(manifest_sha256) != 64 or any(
+            value not in "0123456789abcdef" for value in manifest_sha256
+        ):
+            raise ValueError("manifest_sha256 必须是 64 个小写十六进制字符")
+        kind = (
+            "EVIDENCE_KIND_SNAPSHOT"
+            if self.config.payload_format is PayloadFormat.PROTOBUF
+            else "SNAPSHOT"
+        )
+        return self.call(
+            "ackEvidenceImages",
+            {
+                "eventId": str(event_id),
+                "kind": kind,
+                "manifestSha256": manifest_sha256,
+            },
+            timeout=timeout,
+        )
+
     def _on_connect(
         self,
         client: mqtt.Client,

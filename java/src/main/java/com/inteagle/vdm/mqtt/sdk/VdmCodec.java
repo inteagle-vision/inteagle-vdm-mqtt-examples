@@ -9,6 +9,7 @@ import com.google.protobuf.DynamicMessage;
 import com.google.protobuf.Message;
 import com.google.protobuf.util.JsonFormat;
 import com.inteagle.vdm.mqtt.v1.Alarm;
+import com.inteagle.vdm.mqtt.v1.AlarmEvidence;
 import com.inteagle.vdm.mqtt.v1.Attributes;
 import com.inteagle.vdm.mqtt.v1.Event;
 import com.inteagle.vdm.mqtt.v1.RpcRequest;
@@ -52,7 +53,17 @@ public final class VdmCodec {
       Map.entry("removeCruisePoint", "remove_cruise_point"),
       Map.entry("startPatrol", "start_patrol"),
       Map.entry("stopPatrol", "stop_patrol"),
-      Map.entry("getPatrolStatus", "get_patrol_status"));
+      Map.entry("getPatrolStatus", "get_patrol_status"),
+      Map.entry("getEvidenceStatus", "get_evidence_status"),
+      Map.entry("retryEvidence", "retry_evidence"),
+      Map.entry("ackEvidenceImages", "ack_evidence_images"));
+
+  private static final Map<String, String> JSON_ONLY_RPC_FIELDS = Map.ofEntries(
+      Map.entry("getAlarmCaps", "get_alarm_caps"),
+      Map.entry("listAlarmRules", "list_alarm_rules"),
+      Map.entry("applyAlarmRules", "apply_alarm_rules"),
+      Map.entry("getAlarmState", "get_alarm_state"),
+      Map.entry("listAlarmHistory", "list_alarm_history"));
 
   public record RpcEncoding(byte[] payload, String expectedResponseField) {
     public RpcEncoding {
@@ -91,15 +102,34 @@ public final class VdmCodec {
     Object value;
     JsonNode data;
     if (suffix.equals("image")) {
-      ImageFrame image = decodeImage(payload);
-      value = image;
+      value = decodeImage(payload);
       ObjectNode node = objectMapper.createObjectNode();
-      node.put("version", image.version());
-      node.put("headerLength", image.headerLength());
-      node.put("sensorId", image.sensorId());
-      node.put("imageType", image.imageType());
-      node.put("timestampS", image.timestampS());
-      node.put("jpegBytes", image.jpeg().length);
+      if (value instanceof EvidenceImageChunk chunk) {
+        node.put("messageType", chunk.messageType());
+        node.put("headerLength", chunk.headerLength());
+        node.put("cameraId", chunk.cameraId());
+        node.put("triggerType", chunk.triggerType());
+        node.put("capturedAtMs", Long.toUnsignedString(chunk.capturedAtMs()));
+        node.put("eventId", Long.toUnsignedString(chunk.eventId()));
+        node.put("imageIndex", chunk.imageIndex());
+        node.put("imageCount", chunk.imageCount());
+        node.put("actualOffsetMs", chunk.actualOffsetMs());
+        node.put("jpegLength", chunk.jpegLength());
+        node.put("jpegSha256", java.util.HexFormat.of().formatHex(chunk.jpegSha256()));
+        node.put("manifestSha256", java.util.HexFormat.of().formatHex(chunk.manifestSha256()));
+        node.put("chunkIndex", chunk.chunkIndex());
+        node.put("chunkCount", chunk.chunkCount());
+        node.put("chunkOffset", chunk.chunkOffset());
+        node.put("chunkBytes", chunk.chunk().length);
+      } else {
+        ImageFrame image = (ImageFrame) value;
+        node.put("version", image.version());
+        node.put("headerLength", image.headerLength());
+        node.put("sensorId", image.sensorId());
+        node.put("imageType", image.imageType());
+        node.put("timestampS", image.timestampS());
+        node.put("jpegBytes", image.jpeg().length);
+      }
       data = node;
     } else if (format == PayloadFormat.JSON) {
       data = objectMapper.readTree(payload);
@@ -109,9 +139,11 @@ public final class VdmCodec {
       value = data;
     } else {
       Message message = parseProtobuf(suffix, payload);
-      int version = schemaVersion(message);
-      if (version != SCHEMA_VERSION) {
-        throw new IllegalArgumentException("不支持 schema_version=" + version);
+      if (!(message instanceof AlarmEvidence)) {
+        int version = schemaVersion(message);
+        if (version != SCHEMA_VERSION) {
+          throw new IllegalArgumentException("不支持 schema_version=" + version);
+        }
       }
       value = message;
       data = objectMapper.readTree(JsonFormat.printer().print(message));
@@ -125,7 +157,13 @@ public final class VdmCodec {
       throw new IllegalArgumentException("reqId 必须是非零 signed int32");
     }
     String fieldName = PUBLIC_RPC_FIELDS.get(method);
+    if (fieldName == null && format == PayloadFormat.JSON) {
+      fieldName = JSON_ONLY_RPC_FIELDS.get(method);
+    }
     if (fieldName == null) {
+      if (JSON_ONLY_RPC_FIELDS.containsKey(method)) {
+        throw new IllegalArgumentException(method + " 在 0.8.5 仅支持 StdMqtt JSON Payload");
+      }
       throw new IllegalArgumentException("RPC 方法不属于公开 VDM API: " + method);
     }
     Map<String, ?> values = params == null ? Map.of() : params;
@@ -192,6 +230,7 @@ public final class VdmCodec {
       case "attributes" -> Attributes.parseFrom(payload);
       case "event" -> Event.parseFrom(payload);
       case "3A" -> Alarm.parseFrom(payload);
+      case "evidence" -> AlarmEvidence.parseFrom(payload);
       case "rpc/req" -> RpcRequest.parseFrom(payload);
       case "rpc/resp" -> RpcResponse.parseFrom(payload);
       default -> throw new IllegalArgumentException("未支持的 Topic: " + suffix);
@@ -210,7 +249,10 @@ public final class VdmCodec {
     };
   }
 
-  private static ImageFrame decodeImage(byte[] payload) {
+  private static Object decodeImage(byte[] payload) {
+    if (payload.length > 0 && Byte.toUnsignedInt(payload[0]) == 2) {
+      return decodeEvidenceImageChunk(payload);
+    }
     if (payload.length < 10) {
       throw new IllegalArgumentException("图片 Payload 小于 VDM Header 与 JPEG 最小长度");
     }
@@ -232,5 +274,47 @@ public final class VdmCodec {
         Byte.toUnsignedInt(payload[3]),
         timestamp,
         Arrays.copyOfRange(payload, headerLength, payload.length));
+  }
+
+  private static EvidenceImageChunk decodeEvidenceImageChunk(byte[] payload) {
+    final int headerLength = 112;
+    final int chunkBytes = 128 * 1024;
+    if (payload.length < headerLength) {
+      throw new IllegalArgumentException("告警证据图片 Payload 小于 112 字节固定 Header");
+    }
+    if (Byte.toUnsignedInt(payload[1]) != headerLength || Byte.toUnsignedInt(payload[3]) != 1) {
+      throw new IllegalArgumentException("告警证据图片 headerLen/triggerType 非法");
+    }
+    ByteBuffer buffer = ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN);
+    long capturedAtMs = buffer.getLong(4);
+    long eventId = buffer.getLong(12);
+    int imageIndex = Short.toUnsignedInt(buffer.getShort(20));
+    int imageCount = Short.toUnsignedInt(buffer.getShort(22));
+    long jpegLength = Integer.toUnsignedLong(buffer.getInt(28));
+    int chunkIndex = Short.toUnsignedInt(buffer.getShort(96));
+    int chunkCount = Short.toUnsignedInt(buffer.getShort(98));
+    long chunkOffset = Integer.toUnsignedLong(buffer.getInt(100));
+    long chunkLength = Integer.toUnsignedLong(buffer.getInt(104));
+    long flags = Integer.toUnsignedLong(buffer.getInt(108));
+    long expectedCount = (jpegLength + chunkBytes - 1) / chunkBytes;
+    long expectedOffset = (long) chunkIndex * chunkBytes;
+    long expectedLength = Math.min(chunkBytes, jpegLength - expectedOffset);
+    if (capturedAtMs == 0 || eventId == 0 || imageCount < 1 || imageCount > 64
+        || imageIndex >= imageCount || jpegLength < 1 || jpegLength > 2L * 1024 * 1024
+        || chunkCount != expectedCount || chunkIndex >= chunkCount
+        || chunkOffset != expectedOffset || chunkLength != expectedLength
+        || payload.length != headerLength + chunkLength || flags != 0) {
+      throw new IllegalArgumentException("告警证据图片身份、索引、分块范围、长度或 flags 非法");
+    }
+    byte[] chunk = Arrays.copyOfRange(payload, headerLength, payload.length);
+    if (chunkIndex == 0 && (chunk.length < 2
+        || Byte.toUnsignedInt(chunk[0]) != 0xff || Byte.toUnsignedInt(chunk[1]) != 0xd8)) {
+      throw new IllegalArgumentException("告警证据 JPEG 首块缺少 SOI");
+    }
+    return new EvidenceImageChunk(
+        2, headerLength, Byte.toUnsignedInt(payload[2]), Byte.toUnsignedInt(payload[3]),
+        capturedAtMs, eventId, imageIndex, imageCount, buffer.getInt(24), jpegLength,
+        Arrays.copyOfRange(payload, 32, 64), Arrays.copyOfRange(payload, 64, 96),
+        chunkIndex, chunkCount, chunkOffset, chunk);
   }
 }

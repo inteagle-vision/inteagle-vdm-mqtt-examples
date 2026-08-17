@@ -14,6 +14,10 @@ import inteagle_vdm_mqtt_v1_pb2 as pb
 
 
 SCHEMA_VERSION = 1
+EVIDENCE_IMAGE_HEADER_LENGTH = 112
+EVIDENCE_CHUNK_BYTES = 128 * 1024
+MAX_EVIDENCE_IMAGE_BYTES = 2 * 1024 * 1024
+MAX_EVIDENCE_IMAGES = 64
 
 
 class PayloadFormat(str, Enum):
@@ -83,11 +87,31 @@ class ImageFrame:
 
 
 @dataclass(frozen=True)
+class EvidenceImageChunk:
+    message_type: int
+    header_length: int
+    camera_id: int
+    trigger_type: int
+    captured_at_ms: int
+    event_id: int
+    image_index: int
+    image_count: int
+    actual_offset_ms: int
+    jpeg_length: int
+    jpeg_sha256: bytes
+    manifest_sha256: bytes
+    chunk_index: int
+    chunk_count: int
+    chunk_offset: int
+    chunk: bytes
+
+
+@dataclass(frozen=True)
 class DecodedPayload:
     topic: str
     suffix: str
     raw: bytes
-    value: dict[str, Any] | Message | ImageFrame
+    value: dict[str, Any] | Message | ImageFrame | EvidenceImageChunk
 
     def as_dict(self) -> dict[str, Any]:
         """返回便于日志、Web API 和业务分派使用的完整字段对象。
@@ -106,6 +130,25 @@ class DecodedPayload:
                 "timestampS": self.value.timestamp_s,
                 "jpegBytes": len(self.value.jpeg),
             }
+        if isinstance(self.value, EvidenceImageChunk):
+            return {
+                "messageType": self.value.message_type,
+                "headerLength": self.value.header_length,
+                "cameraId": self.value.camera_id,
+                "triggerType": self.value.trigger_type,
+                "capturedAtMs": self.value.captured_at_ms,
+                "eventId": str(self.value.event_id),
+                "imageIndex": self.value.image_index,
+                "imageCount": self.value.image_count,
+                "actualOffsetMs": self.value.actual_offset_ms,
+                "jpegLength": self.value.jpeg_length,
+                "jpegSha256": self.value.jpeg_sha256.hex(),
+                "manifestSha256": self.value.manifest_sha256.hex(),
+                "chunkIndex": self.value.chunk_index,
+                "chunkCount": self.value.chunk_count,
+                "chunkOffset": self.value.chunk_offset,
+                "chunkBytes": len(self.value.chunk),
+            }
         return json_format.MessageToDict(
             self.value,
             preserving_proto_field_name=False,
@@ -118,6 +161,7 @@ PROTOBUF_MESSAGE_TYPES: dict[str, type[Message]] = {
     "attributes": pb.Attributes,
     "event": pb.Event,
     "3A": pb.Alarm,
+    "evidence": pb.AlarmEvidence,
     "rpc/req": pb.RpcRequest,
     "rpc/resp": pb.RpcResponse,
 }
@@ -154,6 +198,20 @@ RPC_REQUEST_TYPES: dict[str, tuple[str, type[Message]]] = {
     "startPatrol": ("start_patrol", pb.StartPatrolRequest),
     "stopPatrol": ("stop_patrol", pb.Empty),
     "getPatrolStatus": ("get_patrol_status", pb.Empty),
+    "getEvidenceStatus": ("get_evidence_status", pb.EvidenceQueryRequest),
+    "retryEvidence": ("retry_evidence", pb.EvidenceQueryRequest),
+    "ackEvidenceImages": ("ack_evidence_images", pb.EvidenceImagesAckRequest),
+}
+
+# 0.8.5 设备已经向 StdMqtt 开放这些告警 RPC，但 V1 Protobuf oneof 尚未为其分配
+# 字段编号。JSON 连接可以使用；Protobuf 连接会在发布前给出明确错误，避免发出设备
+# 无法解码的伪 Protobuf 请求。
+JSON_ONLY_RPC_FIELDS: dict[str, str] = {
+    "getAlarmCaps": "get_alarm_caps",
+    "listAlarmRules": "list_alarm_rules",
+    "applyAlarmRules": "apply_alarm_rules",
+    "getAlarmState": "get_alarm_state",
+    "listAlarmHistory": "list_alarm_history",
 }
 
 
@@ -162,7 +220,9 @@ class VdmCodec:
         self.payload_format = PayloadFormat.parse(payload_format)
 
     @staticmethod
-    def decode_image(payload: bytes) -> ImageFrame:
+    def decode_image(payload: bytes) -> ImageFrame | EvidenceImageChunk:
+        if payload and payload[0] == 2:
+            return VdmCodec.decode_evidence_image_chunk(payload)
         if len(payload) < 10:
             raise ValueError("图片 Payload 小于 VDM Header 与 JPEG 最小长度")
         header_length = payload[1]
@@ -180,10 +240,73 @@ class VdmCodec:
             jpeg=jpeg,
         )
 
+    @staticmethod
+    def decode_evidence_image_chunk(payload: bytes) -> EvidenceImageChunk:
+        if len(payload) < EVIDENCE_IMAGE_HEADER_LENGTH:
+            raise ValueError("告警证据图片 Payload 小于 112 字节固定 Header")
+        if payload[0] != 2 or payload[1] != EVIDENCE_IMAGE_HEADER_LENGTH:
+            raise ValueError("告警证据图片 messageType/headerLen 非法")
+        if payload[3] != 1:
+            raise ValueError("告警证据图片 triggerType 必须为 1")
+
+        captured_at_ms = int.from_bytes(payload[4:12], "big")
+        event_id = int.from_bytes(payload[12:20], "big")
+        image_index = int.from_bytes(payload[20:22], "big")
+        image_count = int.from_bytes(payload[22:24], "big")
+        actual_offset_ms = int.from_bytes(payload[24:28], "big", signed=True)
+        jpeg_length = int.from_bytes(payload[28:32], "big")
+        chunk_index = int.from_bytes(payload[96:98], "big")
+        chunk_count = int.from_bytes(payload[98:100], "big")
+        chunk_offset = int.from_bytes(payload[100:104], "big")
+        chunk_length = int.from_bytes(payload[104:108], "big")
+        flags = int.from_bytes(payload[108:112], "big")
+
+        if captured_at_ms == 0 or event_id == 0:
+            raise ValueError("告警证据图片时间或 eventId 非法")
+        if image_count == 0 or image_count > MAX_EVIDENCE_IMAGES or image_index >= image_count:
+            raise ValueError("告警证据图片 imageIndex/imageCount 非法")
+        if jpeg_length == 0 or jpeg_length > MAX_EVIDENCE_IMAGE_BYTES:
+            raise ValueError("告警证据 JPEG 长度超出 1..2 MiB")
+        expected_count = (jpeg_length + EVIDENCE_CHUNK_BYTES - 1) // EVIDENCE_CHUNK_BYTES
+        expected_offset = chunk_index * EVIDENCE_CHUNK_BYTES
+        expected_length = min(EVIDENCE_CHUNK_BYTES, jpeg_length - expected_offset)
+        if (
+            chunk_count != expected_count
+            or chunk_index >= chunk_count
+            or chunk_offset != expected_offset
+            or chunk_length != expected_length
+            or len(payload) != EVIDENCE_IMAGE_HEADER_LENGTH + chunk_length
+            or flags != 0
+        ):
+            raise ValueError("告警证据图片分块范围、长度或 flags 非法")
+        chunk = bytes(payload[EVIDENCE_IMAGE_HEADER_LENGTH:])
+        if chunk_index == 0 and not chunk.startswith(b"\xff\xd8"):
+            raise ValueError("告警证据 JPEG 首块缺少 SOI")
+        return EvidenceImageChunk(
+            message_type=2,
+            header_length=EVIDENCE_IMAGE_HEADER_LENGTH,
+            camera_id=payload[2],
+            trigger_type=payload[3],
+            captured_at_ms=captured_at_ms,
+            event_id=event_id,
+            image_index=image_index,
+            image_count=image_count,
+            actual_offset_ms=actual_offset_ms,
+            jpeg_length=jpeg_length,
+            jpeg_sha256=bytes(payload[32:64]),
+            manifest_sha256=bytes(payload[64:96]),
+            chunk_index=chunk_index,
+            chunk_count=chunk_count,
+            chunk_offset=chunk_offset,
+            chunk=chunk,
+        )
+
     def decode(self, topic: str, topics: VdmTopics, payload: bytes) -> DecodedPayload:
         suffix = topics.suffix(topic)
         if suffix == "image":
-            value: dict[str, Any] | Message | ImageFrame = self.decode_image(payload)
+            value: dict[str, Any] | Message | ImageFrame | EvidenceImageChunk = self.decode_image(
+                payload
+            )
         elif self.payload_format is PayloadFormat.JSON:
             try:
                 value = json.loads(payload.decode("utf-8"))
@@ -200,7 +323,7 @@ class VdmCodec:
                 message.ParseFromString(payload)
             except DecodeError as exc:
                 raise ValueError(f"Protobuf 解析失败: {exc}") from exc
-            if getattr(message, "schema_version", 0) != SCHEMA_VERSION:
+            if suffix != "evidence" and getattr(message, "schema_version", 0) != SCHEMA_VERSION:
                 raise ValueError(
                     f"不支持 schema_version={getattr(message, 'schema_version', 0)}"
                 )
@@ -216,9 +339,9 @@ class VdmCodec:
         if req_id == 0 or not -(2**31) <= req_id < 2**31:
             raise ValueError("req_id 必须是非零 signed int32")
         route = RPC_REQUEST_TYPES.get(method)
-        if route is None:
+        json_only_field = JSON_ONLY_RPC_FIELDS.get(method)
+        if route is None and json_only_field is None:
             raise ValueError(f"RPC 方法不属于公开 VDM API: {method}")
-        response_field, message_type = route
         params = params or {}
         if self.payload_format is PayloadFormat.JSON:
             return (
@@ -227,8 +350,12 @@ class VdmCodec:
                     ensure_ascii=False,
                     separators=(",", ":"),
                 ).encode("utf-8"),
-                response_field,
+                route[0] if route is not None else json_only_field,
             )
+
+        if route is None:
+            raise ValueError(f"{method} 在 0.8.5 仅支持 StdMqtt JSON Payload")
+        response_field, message_type = route
 
         body = message_type()
         try:

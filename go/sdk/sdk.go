@@ -4,6 +4,7 @@ package sdk
 import (
 	"context"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,6 +21,13 @@ import (
 )
 
 const SchemaVersion uint32 = 1
+
+const (
+	evidenceImageHeaderLength = 112
+	evidenceChunkBytes        = 128 * 1024
+	maxEvidenceImageBytes     = 2 * 1024 * 1024
+	maxEvidenceImages         = 64
+)
 
 type PayloadFormat string
 
@@ -76,6 +84,18 @@ type ImageFrame struct {
 	JPEG         []byte
 }
 
+type EvidenceImageChunk struct {
+	MessageType, HeaderLength, CameraID, TriggerType uint8
+	CapturedAtMS, EventID                            uint64
+	ImageIndex, ImageCount                           uint16
+	ActualOffsetMS                                   int32
+	JPEGLength                                       uint32
+	JPEGSHA256, ManifestSHA256                       [32]byte
+	ChunkIndex, ChunkCount                           uint16
+	ChunkOffset                                      uint32
+	Chunk                                            []byte
+}
+
 type DecodedPayload struct {
 	Topic  string
 	Suffix string
@@ -94,6 +114,18 @@ func (d *DecodedPayload) AsMap() (map[string]any, error) {
 			"version": value.Version, "headerLength": value.HeaderLength,
 			"sensorId": value.SensorID, "imageType": value.ImageType,
 			"timestampS": value.TimestampS, "jpegBytes": len(value.JPEG),
+		}, nil
+	case *EvidenceImageChunk:
+		return map[string]any{
+			"messageType": value.MessageType, "headerLength": value.HeaderLength,
+			"cameraId": value.CameraID, "triggerType": value.TriggerType,
+			"capturedAtMs": value.CapturedAtMS, "eventId": fmt.Sprintf("%d", value.EventID),
+			"imageIndex": value.ImageIndex, "imageCount": value.ImageCount,
+			"actualOffsetMs": value.ActualOffsetMS, "jpegLength": value.JPEGLength,
+			"jpegSha256":     hex.EncodeToString(value.JPEGSHA256[:]),
+			"manifestSha256": hex.EncodeToString(value.ManifestSHA256[:]),
+			"chunkIndex":     value.ChunkIndex, "chunkCount": value.ChunkCount,
+			"chunkOffset": value.ChunkOffset, "chunkBytes": len(value.Chunk),
 		}, nil
 	case proto.Message:
 		payload, err := (protojson.MarshalOptions{UseProtoNames: false}).Marshal(value)
@@ -117,7 +149,10 @@ func NewCodec(value string) (Codec, error) {
 	return Codec{Format: format}, err
 }
 
-func decodeImage(payload []byte) (*ImageFrame, error) {
+func decodeImage(payload []byte) (any, error) {
+	if len(payload) > 0 && payload[0] == 2 {
+		return decodeEvidenceImageChunk(payload)
+	}
 	if len(payload) < 10 {
 		return nil, errors.New("图片 Payload 小于 VDM Header 与 JPEG 最小长度")
 	}
@@ -139,6 +174,54 @@ func decodeImage(payload []byte) (*ImageFrame, error) {
 	}, nil
 }
 
+func decodeEvidenceImageChunk(payload []byte) (*EvidenceImageChunk, error) {
+	if len(payload) < evidenceImageHeaderLength {
+		return nil, errors.New("告警证据图片 Payload 小于 112 字节固定 Header")
+	}
+	if payload[0] != 2 || payload[1] != evidenceImageHeaderLength || payload[3] != 1 {
+		return nil, errors.New("告警证据图片 messageType/headerLen/triggerType 非法")
+	}
+	capturedAt := binary.BigEndian.Uint64(payload[4:12])
+	eventID := binary.BigEndian.Uint64(payload[12:20])
+	imageIndex := binary.BigEndian.Uint16(payload[20:22])
+	imageCount := binary.BigEndian.Uint16(payload[22:24])
+	jpegLength := binary.BigEndian.Uint32(payload[28:32])
+	chunkIndex := binary.BigEndian.Uint16(payload[96:98])
+	chunkCount := binary.BigEndian.Uint16(payload[98:100])
+	chunkOffset := binary.BigEndian.Uint32(payload[100:104])
+	chunkLength := binary.BigEndian.Uint32(payload[104:108])
+	flags := binary.BigEndian.Uint32(payload[108:112])
+	if capturedAt == 0 || eventID == 0 || imageCount == 0 || imageCount > maxEvidenceImages || imageIndex >= imageCount {
+		return nil, errors.New("告警证据图片身份或 imageIndex/imageCount 非法")
+	}
+	if jpegLength == 0 || jpegLength > maxEvidenceImageBytes {
+		return nil, errors.New("告警证据 JPEG 长度超出 1..2 MiB")
+	}
+	expectedCount := (jpegLength + evidenceChunkBytes - 1) / evidenceChunkBytes
+	expectedOffset := uint32(chunkIndex) * evidenceChunkBytes
+	if expectedOffset >= jpegLength {
+		return nil, errors.New("告警证据图片 chunkOffset 超出 JPEG")
+	}
+	expectedLength := min(uint32(evidenceChunkBytes), jpegLength-expectedOffset)
+	if uint32(chunkCount) != expectedCount || chunkIndex >= chunkCount || chunkOffset != expectedOffset ||
+		chunkLength != expectedLength || len(payload) != evidenceImageHeaderLength+int(chunkLength) || flags != 0 {
+		return nil, errors.New("告警证据图片分块范围、长度或 flags 非法")
+	}
+	chunk := append([]byte(nil), payload[evidenceImageHeaderLength:]...)
+	if chunkIndex == 0 && (len(chunk) < 2 || chunk[0] != 0xff || chunk[1] != 0xd8) {
+		return nil, errors.New("告警证据 JPEG 首块缺少 SOI")
+	}
+	result := &EvidenceImageChunk{
+		MessageType: 2, HeaderLength: evidenceImageHeaderLength, CameraID: payload[2], TriggerType: payload[3],
+		CapturedAtMS: capturedAt, EventID: eventID, ImageIndex: imageIndex, ImageCount: imageCount,
+		ActualOffsetMS: int32(binary.BigEndian.Uint32(payload[24:28])), JPEGLength: jpegLength,
+		ChunkIndex: chunkIndex, ChunkCount: chunkCount, ChunkOffset: chunkOffset, Chunk: chunk,
+	}
+	copy(result.JPEGSHA256[:], payload[32:64])
+	copy(result.ManifestSHA256[:], payload[64:96])
+	return result, nil
+}
+
 func protobufMessage(suffix string) (proto.Message, error) {
 	switch suffix {
 	case "telemetry":
@@ -149,6 +232,8 @@ func protobufMessage(suffix string) (proto.Message, error) {
 		return &vdmmqttv1.Event{}, nil
 	case "3A":
 		return &vdmmqttv1.Alarm{}, nil
+	case "evidence":
+		return &vdmmqttv1.AlarmEvidence{}, nil
 	case "rpc/req":
 		return &vdmmqttv1.RpcRequest{}, nil
 	case "rpc/resp":
@@ -180,7 +265,7 @@ func (c Codec) Decode(topic string, topics Topics, payload []byte) (*DecodedPayl
 		if err == nil {
 			err = proto.Unmarshal(raw, message)
 		}
-		if err == nil {
+		if err == nil && suffix != "evidence" {
 			versioned, ok := message.(interface{ GetSchemaVersion() uint32 })
 			if !ok {
 				err = errors.New("Protobuf 消息未声明 schema_version")
@@ -206,7 +291,15 @@ var publicRPCFields = map[string]string{
 	"getMotorAngle": "get_motor_angle", "setMotorZero": "set_motor_zero", "enableMotor": "enable_motor",
 	"disableMotor": "disable_motor", "getCruisePaths": "get_cruise_paths", "setCruisePoint": "set_cruise_point",
 	"removeCruisePoint": "remove_cruise_point", "startPatrol": "start_patrol", "stopPatrol": "stop_patrol",
-	"getPatrolStatus": "get_patrol_status",
+	"getPatrolStatus":   "get_patrol_status",
+	"getEvidenceStatus": "get_evidence_status", "retryEvidence": "retry_evidence",
+	"ackEvidenceImages": "ack_evidence_images",
+}
+
+var jsonOnlyRPCFields = map[string]string{
+	"getAlarmCaps": "get_alarm_caps", "listAlarmRules": "list_alarm_rules",
+	"applyAlarmRules": "apply_alarm_rules", "getAlarmState": "get_alarm_state",
+	"listAlarmHistory": "list_alarm_history",
 }
 
 func (c Codec) EncodeRPC(method string, params any, reqID int32) ([]byte, string, error) {
@@ -214,7 +307,13 @@ func (c Codec) EncodeRPC(method string, params any, reqID int32) ([]byte, string
 		return nil, "", errors.New("reqID 必须是非零 signed int32")
 	}
 	fieldName, ok := publicRPCFields[method]
+	if !ok && c.Format == JSON {
+		fieldName, ok = jsonOnlyRPCFields[method]
+	}
 	if !ok {
+		if _, jsonOnly := jsonOnlyRPCFields[method]; jsonOnly {
+			return nil, "", fmt.Errorf("%s 在 0.8.5 仅支持 StdMqtt JSON Payload", method)
+		}
 		return nil, "", fmt.Errorf("RPC 方法不属于公开 VDM API: %s", method)
 	}
 	if params == nil {

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import threading
 import time
@@ -22,8 +23,30 @@ def json_bytes(value: dict[str, Any]) -> bytes:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode()
 
 
-def image_frame() -> bytes:
-    return bytes((1, 8, 0, 0)) + TIMESTAMP_S.to_bytes(4, "big") + b"\xff\xd8\xff\xd9"
+EVIDENCE_EVENT_ID = 9_001
+EVIDENCE_JPEG = b"\xff\xd8vdm-evidence-demo\xff\xd9"
+EVIDENCE_MANIFEST_SHA256 = hashlib.sha256(b"vdm-evidence-manifest-demo").digest()
+
+
+def evidence_image_frame() -> bytes:
+    jpeg_sha256 = hashlib.sha256(EVIDENCE_JPEG).digest()
+    header = bytearray()
+    header.extend((2, 112, 0, 1))
+    header.extend((TIMESTAMP_S * 1000).to_bytes(8, "big"))
+    header.extend(EVIDENCE_EVENT_ID.to_bytes(8, "big"))
+    header.extend((0).to_bytes(2, "big"))
+    header.extend((1).to_bytes(2, "big"))
+    header.extend((-1000).to_bytes(4, "big", signed=True))
+    header.extend(len(EVIDENCE_JPEG).to_bytes(4, "big"))
+    header.extend(jpeg_sha256)
+    header.extend(EVIDENCE_MANIFEST_SHA256)
+    header.extend((0).to_bytes(2, "big"))
+    header.extend((1).to_bytes(2, "big"))
+    header.extend((0).to_bytes(4, "big"))
+    header.extend(len(EVIDENCE_JPEG).to_bytes(4, "big"))
+    header.extend((0).to_bytes(4, "big"))
+    assert len(header) == 112
+    return bytes(header) + EVIDENCE_JPEG
 
 
 def protobuf_fixtures() -> list[tuple[str, bytes]]:
@@ -67,6 +90,13 @@ def protobuf_fixtures() -> list[tuple[str, bytes]]:
     alarm.displacement.value_mm = 3.5
     alarm.displacement.limit_mm = 3.0
 
+    evidence = pb.AlarmEvidence(
+        event_id=EVIDENCE_EVENT_ID,
+        kind=pb.EVIDENCE_KIND_SNAPSHOT,
+        state=pb.EVIDENCE_STATE_READY,
+        timestamp_s=TIMESTAMP_S,
+    )
+
     request = pb.RpcRequest(schema_version=1, req_id=42)
     request.get_attr.keys.extend(("deviceId", "fwVer"))
 
@@ -80,9 +110,10 @@ def protobuf_fixtures() -> list[tuple[str, bytes]]:
         ("attributes", attributes.SerializeToString(deterministic=True)),
         ("event", event.SerializeToString(deterministic=True)),
         ("3A", alarm.SerializeToString(deterministic=True)),
+        ("evidence", evidence.SerializeToString(deterministic=True)),
         ("rpc/req", request.SerializeToString(deterministic=True)),
         ("rpc/resp", response.SerializeToString(deterministic=True)),
-        ("image", image_frame()),
+        ("image", evidence_image_frame()),
     ]
 
 
@@ -137,15 +168,25 @@ def json_fixtures() -> list[tuple[str, bytes]]:
                     "type": "DISP_LIMIT",
                     "level": "ALERT",
                     "transition": "TRIGGERED",
-                    "timestamp": TIMESTAMP_S,
+                    "ts": TIMESTAMP_S,
                     "detail": {
                         "targetId": "T01",
                         "metric": "DX",
                         "direction": "POSITIVE",
                         "value": 3.5,
                         "limit": 3.0,
-                        "unit": "mm",
                     },
+                }
+            ),
+        ),
+        (
+            "evidence",
+            json_bytes(
+                {
+                    "eventId": str(EVIDENCE_EVENT_ID),
+                    "kind": "SNAPSHOT",
+                    "state": "READY",
+                    "ts": TIMESTAMP_S,
                 }
             ),
         ),
@@ -166,7 +207,7 @@ def json_fixtures() -> list[tuple[str, bytes]]:
                 }
             ),
         ),
-        ("image", image_frame()),
+        ("image", evidence_image_frame()),
     ]
 
 
@@ -236,7 +277,7 @@ class Publisher:
             self.condition.notify_all()
 
     def respond_rpc(self, payload: bytes) -> None:
-        """作为纯 MQTT 模拟设备，响应三个语言 SDK 发起的 getAttr。"""
+        """作为纯 MQTT 模拟设备，响应四种语言 SDK 发起的 getAttr。"""
         try:
             if self.profile == "protobuf":
                 rpc_request = pb.RpcRequest.FromString(payload)

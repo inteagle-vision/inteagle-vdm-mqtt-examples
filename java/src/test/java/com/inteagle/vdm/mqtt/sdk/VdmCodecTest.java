@@ -6,6 +6,9 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import com.inteagle.vdm.mqtt.v1.Attributes;
 import com.inteagle.vdm.mqtt.v1.RpcRequest;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.security.MessageDigest;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -41,7 +44,9 @@ final class VdmCodecTest {
         "uploadS3", "ispCtl", "setMotorAngle", "getMotorAngle", "setMotorZero", "enableMotor",
         "disableMotor", "getCruisePaths", "setCruisePoint", "removeCruisePoint", "startPatrol",
         "stopPatrol", "getPatrolStatus");
-    assertEquals(29, methods.size());
+    methods = new java.util.HashSet<>(methods);
+    methods.addAll(Set.of("getEvidenceStatus", "retryEvidence", "ackEvidenceImages"));
+    assertEquals(32, methods.size());
     VdmCodec codec = new VdmCodec(PayloadFormat.PROTOBUF);
     int reqId = 100;
     for (String method : methods) {
@@ -75,5 +80,30 @@ final class VdmCodecTest {
     assertThrows(
         IllegalArgumentException.class,
         () -> codec.decode(topics.topic("attributes"), topics, payload));
+  }
+
+  @Test
+  void decodesStrictEvidenceImageChunk() throws Exception {
+    byte[] jpeg = new byte[] {(byte) 0xff, (byte) 0xd8, 'v', 'd', 'm', (byte) 0xff, (byte) 0xd9};
+    byte[] payload = new byte[112 + jpeg.length];
+    ByteBuffer buffer = ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN);
+    buffer.put(0, (byte) 2).put(1, (byte) 112).put(2, (byte) 1).put(3, (byte) 1);
+    buffer.putLong(4, 1_721_805_600_000L);
+    buffer.putLong(12, 9001L);
+    buffer.putShort(20, (short) 0).putShort(22, (short) 1);
+    buffer.putInt(24, -1000).putInt(28, jpeg.length);
+    System.arraycopy(MessageDigest.getInstance("SHA-256").digest(jpeg), 0, payload, 32, 32);
+    System.arraycopy(MessageDigest.getInstance("SHA-256").digest("manifest".getBytes()), 0, payload, 64, 32);
+    buffer.putShort(96, (short) 0).putShort(98, (short) 1);
+    buffer.putInt(100, 0).putInt(104, jpeg.length).putInt(108, 0);
+    System.arraycopy(jpeg, 0, payload, 112, jpeg.length);
+
+    VdmCodec codec = new VdmCodec(PayloadFormat.PROTOBUF);
+    VdmTopics topics = VdmTopics.forDevice("DEMO001");
+    DecodedPayload decoded = codec.decode(topics.topic("image"), topics, payload);
+    EvidenceImageChunk chunk = assertInstanceOf(EvidenceImageChunk.class, decoded.value());
+    assertEquals(9001L, chunk.eventId());
+    assertEquals(-1000, chunk.actualOffsetMs());
+    assertEquals(jpeg.length, chunk.chunk().length);
   }
 }

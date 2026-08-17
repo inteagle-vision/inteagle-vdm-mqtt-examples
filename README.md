@@ -3,11 +3,12 @@
 本仓库提供 VDM 设备 MQTT 数据的 Python、Go、Java、JavaScript SDK 源码、完整解析示例和
 NanoMQ 自动测试。四种语言使用同一份
 [`proto/inteagle_vdm_mqtt_v1.proto`](proto/inteagle_vdm_mqtt_v1.proto)，可直接得到
-遥测、设备属性、事件、告警、RPC 和图片 Header 的消息对象及可读字段。
+遥测、设备属性、事件、告警、证据状态、RPC 和图片/证据分块的消息对象及可读字段。
 
 设备连接建立时需要明确选择 `JSON` 或 `Protobuf` Payload 格式。云端应按照所选格式
-解析，不应根据 Payload 字节自动猜测格式。`image` Topic 始终使用 VDM 图片 Header 与
-JPEG 字节，不使用 JSON 或 Protobuf 包装。
+解析，不应根据 Payload 字节自动猜测格式。`image` Topic 始终使用二进制结构：类型 `1`
+是普通图片，类型 `2` 是 112 字节固定 Header + 最大 128 KiB JPEG 分块；
+二者均不使用 JSON 或 Protobuf 包装。
 
 <a id="quick-test"></a>
 
@@ -46,12 +47,13 @@ JPEG 字节，不使用 JSON 或 Protobuf 包装。
 
 ```text
 topic=telemetry data={"schemaVersion":1,"displacement":{"sampleFrequencyHz":20,"targets":[{"targetId":"T01","dxMm":[0.125,0.25,0.375],"dyMm":[-0.5,-0.625,-0.75]}],"firstSampleTimestampMs":"1721805600000"}}
-topic=3A data={"schemaVersion":1,"eventId":"9001","alarmType":"ALARM_TYPE_DISPLACEMENT_LIMIT","level":"ALARM_LEVEL_ALERT","displacement":{"targetId":"T01","valueMm":3.5,"limitMm":3.0}}
+topic=3A data={"schemaVersion":1,"eventId":"9001","alarmId":"701","alarmType":"ALARM_TYPE_DISPLACEMENT_LIMIT","level":"ALARM_LEVEL_ALERT","transition":"ALARM_TRANSITION_TRIGGERED","displacement":{"targetId":"T01","valueMm":3.5,"limitMm":3.0}}
+topic=evidence data={"eventId":"9001","kind":"EVIDENCE_KIND_SNAPSHOT","state":"EVIDENCE_STATE_READY","timestampS":"1721805600"}
+topic=image data={"messageType":2,"headerLength":112,"eventId":"9001","imageIndex":0,"imageCount":1,"actualOffsetMs":-1000,"chunkIndex":0,"chunkCount":1}
 ```
 
-当前 7 条示例消息的结构化内容完全对应：Protobuf 总计 `246` 字节，JSON 总计
-`674` 字节，示例中减少约 `63.5%`。这只是本组测试数据的实测结果，实际节省比例取决于
-位移点数、采样批次和可选字段；可以通过发布器输出的 `bytes` 对实际模型重新测量。
+当前 8 条示例消息同时验证 JSON/Protobuf 业务消息和二进制证据分块。
+发布器会输出每条消息的实际 `bytes`，可用实际标靶数和采样频率重新评估流量。
 
 可通过环境变量修改宿主机映射端口：
 
@@ -71,12 +73,14 @@ NANOMQ_PORT=28883 ./run_demo.sh protobuf
 | `vdm/DEMO001/attributes` | `Attributes` | 设备到云端 |
 | `vdm/DEMO001/event` | `Event` | 设备到云端 |
 | `vdm/DEMO001/3A` | `Alarm` | 设备到云端 |
+| `vdm/DEMO001/evidence` | `AlarmEvidence` | 设备到云端 |
 | `vdm/DEMO001/rpc/req` | `RpcRequest` | 云端到设备 |
 | `vdm/DEMO001/rpc/resp` | `RpcResponse` | 设备到云端 |
 | `vdm/DEMO001/image` | 非 Protobuf | 设备到云端 |
 
-四个订阅端都根据 Topic 选择明确的 Protobuf 根消息，并检查 `schema_version == 1`。
-SDK 覆盖设备接入文档中的 29 个公开 RPC，并检查 `req_id` 和 Protobuf oneof 响应类型。
+四个订阅端都根据 Topic 选择明确的 Protobuf 根消息。带 `schema_version`
+的消息必须等于 `1`；紧凑的 `AlarmEvidence` 本身不重复版本字段。SDK 覆盖
+32 个强类型 Protobuf RPC，包括证据查询、重试和应用确认。
 
 <a id="sdk"></a>
 
@@ -84,8 +88,9 @@ SDK 覆盖设备接入文档中的 29 个公开 RPC，并检查 `req_id` 和 Pro
 
 - 按连接配置解析 JSON 或 Protobuf，不猜测 Payload 格式。
 - 返回语言对应的 Protobuf 消息对象，同时提供 JSON 兼容字段视图。
-- 解析位移/环境量遥测、设备属性、事件、告警、RPC 以及图片 Header。
-- 只允许文档公开的 29 个 RPC，并从普通字典/Map 构造对应的强类型 oneof。
+- 解析位移/环境量遥测、设备属性、事件、告警、证据状态、RPC 以及两类图片 Header。
+- 从字典/Map 构造 32 个强类型 Protobuf RPC；告警规则/历史的 5 个 RPC 在 0.8.5 中使用 JSON Payload。
+- Python 示例提供磁盘优先的有界分块重组、JPEG/SHA-256 校验和 `ackEvidenceImages`。
 - 自动维护并发 RPC 的 `req_id`、超时和错误码，断线重连后自动重新订阅。
 - 每个 SDK 客户端实例拥有独立 Topic 和 pending 表；不同设备或云连接不能共享实例。
 
@@ -197,6 +202,64 @@ const response = await client.call(
 );
 ```
 
+<a id="alarm-evidence"></a>
+
+## 告警与抓拍证据对接
+
+0.8.5 中，`alarmId` 表示一次完整告警生命周期，`eventId` 表示其中一次
+状态变化。`RECOVERED` 或 `CANCELLED` 表示该 `alarmId` 的生命周期结束。
+抓拍证据使用触发它的 `eventId`，因此客户平台的关联键为：
+
+```text
+deviceId + alarm.eventId == deviceId + alarmEvidence.eventId == imageHeader.eventId
+```
+
+建议平台保存 `deviceId + alarmId` 作为生命周期主键，并将 `eventId`
+作为状态变化和证据去重键。不要从 ID 位布局互相推导。
+
+StdMqtt 客户证据的流程为：
+
+1. 接收 `3A` 告警和 `evidence` 状态，两者可能乱序或重复。
+2. 在现有 `image` Topic 接收 `messageType=2` 的 128 KiB 分块。
+3. 按 `deviceId + eventId + imageIndex + chunkIndex` 幂等落盘，校验分块范围、JPEG 长度和 SHA-256。
+4. 全部 `imageCount` 张图片持久化后，从收到该分块的同一 StdMqtt 连接调用 `ackEvidenceImages`。
+5. 设备收到匹配的应用确认后上报 `AVAILABLE`，稳定引用为 `mqtt/v1/{eventId}/{manifestSha256}`。
+
+设备只启用一个 StdMqtt 连接时，0.8.5 默认选择该连接发送证据图片；若同时启用多个
+StdMqtt，设备管理员必须明确选择一个客户证据目的地，固件不会猜测。客户平台无需接触
+Inteagle OSS/STS 配置。
+
+Python 参考接收器：
+
+```bash
+cd python
+MQTT_HOST=mqtt.example.com \
+MQTT_PORT=1883 \
+MQTT_USERNAME=customer \
+MQTT_PASSWORD='***' \
+VDM_DEVICE_ID=DEVICE_ID \
+VDM_PAYLOAD_FORMAT=json \
+VDM_EVIDENCE_DIR=./evidence \
+python evidence_receiver.py
+```
+
+它在 `<VDM_EVIDENCE_DIR>/<eventId>/` 下保存校验后的 JPEG 和本地
+`receipt.json`。`receipt.json` 是客户接收回执，不伪装成设备内部
+`manifest.json`。示例不包含 Inteagle OSS/STS 凭据或内部上传接口。
+
+告警配置和历史查询在 0.8.5 中建议将 StdMqtt 连接配置为 JSON：
+
+```javascript
+const state = await client.call("getAlarmState", {});
+const history = await client.call("listAlarmHistory", { limit: 20 });
+const incident = await client.call("listAlarmHistory", { alarmId: "9754138318563442692" });
+```
+
+精确按 `alarmId` 查询 `listAlarmHistory` 时，设备会在该生命周期记录中
+附加当前可见的证据摘要。Protobuf V1 仍可强类型调用
+`getEvidenceStatus` / `retryEvidence` / `ackEvidenceImages`；告警规则、当前状态
+和历史的 Protobuf oneof 字段将在后续协议版本中增加。
+
 <a id="language-examples"></a>
 
 ## 目录结构
@@ -212,6 +275,7 @@ const response = await client.call(
 │   ├── vdm_mqtt_sdk/                    # Python SDK
 │   ├── tests/                           # Python SDK 单元测试
 │   ├── consumer.py                      # Python SDK 使用示例
+│   ├── evidence_receiver.py             # 证据分块落盘、校验与 ACK 示例
 │   └── publisher.py                     # JSON/Protobuf 测试数据发布
 ├── go/
 │   ├── sdk/                             # Go SDK 与测试

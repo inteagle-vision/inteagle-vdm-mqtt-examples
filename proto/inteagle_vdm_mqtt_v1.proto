@@ -25,6 +25,7 @@ option go_package = "github.com/inteagle-vision/inteagle-vdm-mqtt-examples/go/ge
 //   vdm/{deviceId}/attributes -> Attributes      设备到云端
 //   vdm/{deviceId}/event      -> Event           设备到云端
 //   vdm/{deviceId}/3A         -> Alarm           设备到云端
+//   vdm/{deviceId}/evidence   -> AlarmEvidence   设备到云端
 //   vdm/{deviceId}/rpc/req    -> RpcRequest              云端到设备
 //   vdm/{deviceId}/rpc/resp   -> RpcResponse             设备到云端
 //   vdm/{deviceId}/image      -> 不使用 Protobuf：VDM 图片 Header + JPEG bytes
@@ -134,18 +135,18 @@ message EnvironmentTelemetry {
   optional float pressure_hpa = 4;
 }
 
-// 不属于环境传感器的设备运行状态数据。
+// 客户可见的最小设备运行状态。时间戳本身不构成可上报数据；设备仅在
+// lte_dbm 或 input_voltage_v 至少一项存在时发送该消息。
 message DeviceStatusTelemetry {
   uint64 timestamp_s = 1;
-  optional float cpu_usage_percent = 2;
+  reserved 2;
   optional sint32 lte_dbm = 3;
   optional double input_voltage_v = 4;
-  optional double battery_voltage_v = 5;
-  reserved 6 to 10;
+  reserved 5 to 10;
 }
 
-// 必须至少设置一种遥测消息体。同一个设备状态样本可同时包含环境数据和运行状态，
-// 因此 environment 与 device_status 可以同时存在；displacement 通常单独上报。
+// 必须设置一种遥测消息体。设备当前每条消息只设置 displacement、environment 或
+// device_status 其中一种；environment 与 device_status 不混合上报。
 message Telemetry {
   uint32 schema_version = 1; // 当前包必须设置为 1。
   optional DisplacementTelemetry displacement = 10;
@@ -349,6 +350,41 @@ message Alarm {
   }
 }
 
+enum EvidenceKind {
+  EVIDENCE_KIND_UNSPECIFIED = 0;
+  EVIDENCE_KIND_SNAPSHOT = 1;
+  EVIDENCE_KIND_RECORD = 2;
+}
+
+enum EvidenceState {
+  EVIDENCE_STATE_UNSPECIFIED = 0;
+  EVIDENCE_STATE_READY = 1;
+  EVIDENCE_STATE_AVAILABLE = 2;
+  EVIDENCE_STATE_FAILED = 3;
+  EVIDENCE_STATE_EVICTED = 4;
+}
+
+enum EvidenceFailureReason {
+  EVIDENCE_FAILURE_REASON_UNSPECIFIED = 0;
+  EVIDENCE_FAILURE_REASON_CAPTURE_FAILED = 1;
+  EVIDENCE_FAILURE_REASON_PACKAGE_INVALID = 2;
+  EVIDENCE_FAILURE_REASON_SECURITY_REJECTED = 3;
+  EVIDENCE_FAILURE_REASON_RETRY_EXHAUSTED = 4;
+  EVIDENCE_FAILURE_REASON_QUOTA_EVICTED = 5;
+}
+
+// Small state notification only. Image bytes, object keys, upload URLs and
+// authorization data never cross MQTT in this message.
+message AlarmEvidence {
+  uint64 event_id = 1;
+  EvidenceKind kind = 2;
+  EvidenceState state = 3;
+  uint64 timestamp_s = 4;
+  optional string evidence_id = 5;
+  optional bool partial = 6;
+  optional EvidenceFailureReason reason = 7;
+}
+
 // RPC -----------------------------------------------------------------------
 // req_id 是调用方生成的非零 32-bit signed 请求关联 ID。设备必须在 RpcResponse
 // 中原样返回。值 0 仅用于无法关联到有效请求的边界错误。同一个方法在 request 和
@@ -476,6 +512,21 @@ message GetCruisePathsRequest {
   optional bool include_targets = 1; // 未设置时默认为 true。
 }
 
+// 证据运维命令只能按已有告警 eventId 定位，不允许 URL、对象 key
+// 或本地路径进入设备命令边界。kind 未设置时默认 SNAPSHOT。
+message EvidenceQueryRequest {
+  uint64 event_id = 1;
+  optional EvidenceKind kind = 2;
+}
+
+// 客户平台在完整校验同一组 V2 图片后确认接收。manifest_sha256 必须是
+// 64 个小写十六进制字符；设备只接受发出该图片组的同一 StdMqtt 实例确认。
+message EvidenceImagesAckRequest {
+  uint64 event_id = 1;
+  EvidenceKind kind = 2;
+  string manifest_sha256 = 3;
+}
+
 message SetCruisePointRequest {
   uint32 path_id = 1;
   uint32 point_id = 2;
@@ -528,6 +579,9 @@ message RpcRequest {
     StartPatrolRequest start_patrol = 73;
     Empty stop_patrol = 74;
     Empty get_patrol_status = 75;
+    EvidenceQueryRequest get_evidence_status = 80;
+    EvidenceQueryRequest retry_evidence = 81;
+    EvidenceImagesAckRequest ack_evidence_images = 82;
   }
 }
 
@@ -562,6 +616,11 @@ message DynamicValueResponse {
 message GetMotorAngleResponse {
   optional float pan_degrees = 1;
   optional float tilt_degrees = 2;
+}
+
+message EvidenceStatusResponse {
+  bool found = 1;
+  optional AlarmEvidence evidence = 2;
 }
 
 // code != 0 时可以不设置 response，message 提供可读的错误原因。code == 0 时
@@ -601,5 +660,8 @@ message RpcResponse {
     Empty start_patrol = 73;
     Empty stop_patrol = 74;
     DynamicObjectResponse get_patrol_status = 75;
+    EvidenceStatusResponse get_evidence_status = 80;
+    EvidenceStatusResponse retry_evidence = 81;
+    EvidenceStatusResponse ack_evidence_images = 82;
   }
 }

@@ -36,6 +36,17 @@ const PUBLIC_RPC_FIELDS = Object.freeze({
   startPatrol: "startPatrol",
   stopPatrol: "stopPatrol",
   getPatrolStatus: "getPatrolStatus",
+  getEvidenceStatus: "getEvidenceStatus",
+  retryEvidence: "retryEvidence",
+  ackEvidenceImages: "ackEvidenceImages",
+});
+
+const JSON_ONLY_RPC_FIELDS = Object.freeze({
+  getAlarmCaps: "getAlarmCaps",
+  listAlarmRules: "listAlarmRules",
+  applyAlarmRules: "applyAlarmRules",
+  getAlarmState: "getAlarmState",
+  listAlarmHistory: "listAlarmHistory",
 });
 
 const ROOT_TYPES = Object.freeze({
@@ -43,6 +54,7 @@ const ROOT_TYPES = Object.freeze({
   attributes: "inteagle.vdm.mqtt.v1.Attributes",
   event: "inteagle.vdm.mqtt.v1.Event",
   "3A": "inteagle.vdm.mqtt.v1.Alarm",
+  evidence: "inteagle.vdm.mqtt.v1.AlarmEvidence",
   "rpc/req": "inteagle.vdm.mqtt.v1.RpcRequest",
   "rpc/resp": "inteagle.vdm.mqtt.v1.RpcResponse",
 });
@@ -118,14 +130,33 @@ class VdmCodec {
     let data;
     if (suffix === "image") {
       value = VdmCodec.decodeImage(raw);
-      data = {
-        version: value.version,
-        headerLength: value.headerLength,
-        sensorId: value.sensorId,
-        imageType: value.imageType,
-        timestampS: value.timestampS,
-        jpegBytes: value.jpeg.length,
-      };
+      data = value.messageType === 2
+        ? {
+            messageType: value.messageType,
+            headerLength: value.headerLength,
+            cameraId: value.cameraId,
+            triggerType: value.triggerType,
+            capturedAtMs: value.capturedAtMs,
+            eventId: value.eventId,
+            imageIndex: value.imageIndex,
+            imageCount: value.imageCount,
+            actualOffsetMs: value.actualOffsetMs,
+            jpegLength: value.jpegLength,
+            jpegSha256: value.jpegSha256,
+            manifestSha256: value.manifestSha256,
+            chunkIndex: value.chunkIndex,
+            chunkCount: value.chunkCount,
+            chunkOffset: value.chunkOffset,
+            chunkBytes: value.chunk.length,
+          }
+        : {
+            version: value.version,
+            headerLength: value.headerLength,
+            sensorId: value.sensorId,
+            imageType: value.imageType,
+            timestampS: value.timestampS,
+            jpegBytes: value.jpeg.length,
+          };
     } else if (this.payloadFormat === "json") {
       try {
         value = JSON.parse(raw.toString("utf8"));
@@ -142,7 +173,7 @@ class VdmCodec {
         throw new Error(`未支持的 Topic: ${suffix}`);
       }
       value = type.decode(raw);
-      if (value.schemaVersion !== SCHEMA_VERSION) {
+      if (suffix !== "evidence" && value.schemaVersion !== SCHEMA_VERSION) {
         throw new Error(`不支持 schema_version=${value.schemaVersion ?? 0}`);
       }
       data = type.toObject(value, {
@@ -159,7 +190,7 @@ class VdmCodec {
     if (!Number.isInteger(reqId) || reqId === 0 || reqId < -2147483648 || reqId > 2147483647) {
       throw new Error("reqId 必须是非零 signed int32");
     }
-    const expectedResponseField = PUBLIC_RPC_FIELDS[method];
+    const expectedResponseField = PUBLIC_RPC_FIELDS[method] ?? JSON_ONLY_RPC_FIELDS[method];
     if (!expectedResponseField) {
       throw new Error(`RPC 方法不属于公开 VDM API: ${method}`);
     }
@@ -171,6 +202,9 @@ class VdmCodec {
         payload: Buffer.from(JSON.stringify({ reqId, method, params })),
         expectedResponseField,
       };
+    }
+    if (Object.hasOwn(JSON_ONLY_RPC_FIELDS, method)) {
+      throw new Error(`${method} 在 0.8.5 仅支持 StdMqtt JSON Payload`);
     }
     const object = {
       schemaVersion: SCHEMA_VERSION,
@@ -218,6 +252,9 @@ class VdmCodec {
 
   static decodeImage(payload) {
     payload = Buffer.from(payload);
+    if (payload.length > 0 && payload[0] === 2) {
+      return VdmCodec.decodeEvidenceImageChunk(payload);
+    }
     if (payload.length < 10) {
       throw new Error("图片 Payload 小于 VDM Header 与 JPEG 最小长度");
     }
@@ -236,6 +273,60 @@ class VdmCodec {
       imageType: payload[3],
       timestampS: payload.readUInt32BE(4),
       jpeg,
+    };
+  }
+
+  static decodeEvidenceImageChunk(payload) {
+    payload = Buffer.from(payload);
+    const headerLength = 112;
+    const chunkBytes = 128 * 1024;
+    if (payload.length < headerLength) {
+      throw new Error("告警证据图片 Payload 小于 112 字节固定 Header");
+    }
+    if (payload[0] !== 2 || payload[1] !== headerLength || payload[3] !== 1) {
+      throw new Error("告警证据图片 messageType/headerLen/triggerType 非法");
+    }
+    const capturedAtMs = payload.readBigUInt64BE(4);
+    const eventId = payload.readBigUInt64BE(12);
+    const imageIndex = payload.readUInt16BE(20);
+    const imageCount = payload.readUInt16BE(22);
+    const jpegLength = payload.readUInt32BE(28);
+    const chunkIndex = payload.readUInt16BE(96);
+    const chunkCount = payload.readUInt16BE(98);
+    const chunkOffset = payload.readUInt32BE(100);
+    const chunkLength = payload.readUInt32BE(104);
+    const flags = payload.readUInt32BE(108);
+    const expectedCount = Math.ceil(jpegLength / chunkBytes);
+    const expectedOffset = chunkIndex * chunkBytes;
+    const expectedLength = Math.min(chunkBytes, jpegLength - expectedOffset);
+    if (capturedAtMs === 0n || eventId === 0n || imageCount < 1 || imageCount > 64
+        || imageIndex >= imageCount || jpegLength < 1 || jpegLength > 2 * 1024 * 1024
+        || chunkCount !== expectedCount || chunkIndex >= chunkCount
+        || chunkOffset !== expectedOffset || chunkLength !== expectedLength
+        || payload.length !== headerLength + chunkLength || flags !== 0) {
+      throw new Error("告警证据图片身份、索引、分块范围、长度或 flags 非法");
+    }
+    const chunk = Buffer.from(payload.subarray(headerLength));
+    if (chunkIndex === 0 && (chunk.length < 2 || chunk[0] !== 0xff || chunk[1] !== 0xd8)) {
+      throw new Error("告警证据 JPEG 首块缺少 SOI");
+    }
+    return {
+      messageType: 2,
+      headerLength,
+      cameraId: payload[2],
+      triggerType: payload[3],
+      capturedAtMs: capturedAtMs.toString(),
+      eventId: eventId.toString(),
+      imageIndex,
+      imageCount,
+      actualOffsetMs: payload.readInt32BE(24),
+      jpegLength,
+      jpegSha256: payload.subarray(32, 64).toString("hex"),
+      manifestSha256: payload.subarray(64, 96).toString("hex"),
+      chunkIndex,
+      chunkCount,
+      chunkOffset,
+      chunk,
     };
   }
 }
@@ -459,6 +550,7 @@ class VdmMqttClient {
 
 module.exports = {
   PUBLIC_RPC_FIELDS,
+  JSON_ONLY_RPC_FIELDS,
   RpcError,
   SCHEMA_VERSION,
   VdmCodec,

@@ -1,11 +1,20 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import tempfile
 import unittest
 
 import inteagle_vdm_mqtt_v1_pb2 as pb
 
-from vdm_mqtt_sdk import ImageFrame, PayloadFormat, VdmCodec, VdmTopics
+from vdm_mqtt_sdk import (
+    EvidenceImageAssembler,
+    EvidenceImageChunk,
+    ImageFrame,
+    PayloadFormat,
+    VdmCodec,
+    VdmTopics,
+)
 from vdm_mqtt_sdk.codec import RPC_REQUEST_TYPES
 
 
@@ -42,7 +51,7 @@ class VdmCodecTests(unittest.TestCase):
 
     def test_all_public_rpc_methods_build_a_typed_body(self) -> None:
         codec = VdmCodec("protobuf")
-        self.assertEqual(len(RPC_REQUEST_TYPES), 29)
+        self.assertEqual(len(RPC_REQUEST_TYPES), 32)
         for req_id, (method, (expected, _message_type)) in enumerate(
             RPC_REQUEST_TYPES.items(), start=100
         ):
@@ -87,6 +96,73 @@ class VdmCodecTests(unittest.TestCase):
                 "jpegBytes": 4,
             },
         )
+
+    def test_evidence_image_chunk_is_strictly_decoded_and_reassembled(self) -> None:
+        jpeg = b"\xff\xd8evidence\xff\xd9"
+        manifest_sha256 = hashlib.sha256(b"manifest").digest()
+        header = bytearray((2, 112, 1, 1))
+        header.extend((1_721_805_600_000).to_bytes(8, "big"))
+        header.extend((9001).to_bytes(8, "big"))
+        header.extend((0).to_bytes(2, "big"))
+        header.extend((1).to_bytes(2, "big"))
+        header.extend((-1000).to_bytes(4, "big", signed=True))
+        header.extend(len(jpeg).to_bytes(4, "big"))
+        header.extend(hashlib.sha256(jpeg).digest())
+        header.extend(manifest_sha256)
+        header.extend((0).to_bytes(2, "big"))
+        header.extend((1).to_bytes(2, "big"))
+        header.extend((0).to_bytes(4, "big"))
+        header.extend(len(jpeg).to_bytes(4, "big"))
+        header.extend((0).to_bytes(4, "big"))
+        payload = bytes(header) + jpeg
+
+        chunk = VdmCodec.decode_image(payload)
+        self.assertIsInstance(chunk, EvidenceImageChunk)
+        self.assertEqual(chunk.event_id, 9001)
+        self.assertEqual(chunk.actual_offset_ms, -1000)
+        self.assertEqual(chunk.manifest_sha256, manifest_sha256)
+        with tempfile.TemporaryDirectory() as directory:
+            completed = EvidenceImageAssembler(directory).accept(chunk)
+            self.assertIsNotNone(completed)
+            self.assertEqual(completed.event_id, 9001)
+            self.assertEqual(completed.image_paths[0].read_bytes(), jpeg)
+
+        malformed = bytearray(payload)
+        malformed[100:104] = (1).to_bytes(4, "big")
+        with self.assertRaises(ValueError):
+            VdmCodec.decode_image(bytes(malformed))
+
+    def test_completed_image_chunk_duplicate_is_idempotent_while_group_is_pending(self) -> None:
+        jpeg = b"\xff\xd8one\xff\xd9"
+        manifest_sha256 = hashlib.sha256(b"two-images").digest()
+
+        def make_chunk(image_index: int) -> EvidenceImageChunk:
+            return EvidenceImageChunk(
+                message_type=2,
+                header_length=112,
+                camera_id=0,
+                trigger_type=1,
+                captured_at_ms=1_721_805_600_000 + image_index,
+                event_id=9002,
+                image_index=image_index,
+                image_count=2,
+                actual_offset_ms=image_index * 100,
+                jpeg_length=len(jpeg),
+                jpeg_sha256=hashlib.sha256(jpeg).digest(),
+                manifest_sha256=manifest_sha256,
+                chunk_index=0,
+                chunk_count=1,
+                chunk_offset=0,
+                chunk=jpeg,
+            )
+
+        with tempfile.TemporaryDirectory() as directory:
+            assembler = EvidenceImageAssembler(directory)
+            self.assertIsNone(assembler.accept(make_chunk(0)))
+            self.assertIsNone(assembler.accept(make_chunk(0)))
+            completed = assembler.accept(make_chunk(1))
+            self.assertIsNotNone(completed)
+            self.assertEqual(len(completed.image_paths), 2)
 
 
 if __name__ == "__main__":

@@ -28,7 +28,15 @@ export type PublicRpcMethod =
   | "removeCruisePoint"
   | "startPatrol"
   | "stopPatrol"
-  | "getPatrolStatus";
+  | "getPatrolStatus"
+  | "getEvidenceStatus"
+  | "retryEvidence"
+  | "ackEvidenceImages"
+  | "getAlarmCaps"
+  | "listAlarmRules"
+  | "applyAlarmRules"
+  | "getAlarmState"
+  | "listAlarmHistory";
 
 export class VdmTopics {
   readonly baseTopic: string;
@@ -50,11 +58,30 @@ export interface ImageFrame {
   jpeg: Uint8Array;
 }
 
+export interface EvidenceImageChunk {
+  messageType: 2;
+  headerLength: 112;
+  cameraId: number;
+  triggerType: 1;
+  capturedAtMs: string;
+  eventId: string;
+  imageIndex: number;
+  imageCount: number;
+  actualOffsetMs: number;
+  jpegLength: number;
+  jpegSha256: string;
+  manifestSha256: string;
+  chunkIndex: number;
+  chunkCount: number;
+  chunkOffset: number;
+  chunk: Uint8Array;
+}
+
 export interface DecodedPayload {
   topic: string;
   suffix: string;
   raw: Uint8Array;
-  value: object | ImageFrame;
+  value: object | ImageFrame | EvidenceImageChunk;
   data: Record<string, unknown>;
 }
 
@@ -73,7 +100,8 @@ export class VdmCodec {
     message: string;
     responseField: string | null;
   };
-  static decodeImage(payload: Uint8Array): ImageFrame;
+  static decodeImage(payload: Uint8Array): ImageFrame | EvidenceImageChunk;
+  static decodeEvidenceImageChunk(payload: Uint8Array): EvidenceImageChunk;
 }
 
 export interface VdmMqttClientConfig {
@@ -113,4 +141,5 @@ export class VdmMqttClient {
 
 export const SCHEMA_VERSION: 1;
 export const PUBLIC_RPC_FIELDS: Readonly<Record<PublicRpcMethod, string>>;
+export const JSON_ONLY_RPC_FIELDS: Readonly<Record<string, string>>;
 export function parsePayloadFormat(value: string): PayloadFormat;
