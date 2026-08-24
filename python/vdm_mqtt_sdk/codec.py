@@ -19,6 +19,31 @@ EVIDENCE_CHUNK_BYTES = 128 * 1024
 MAX_EVIDENCE_IMAGE_BYTES = 2 * 1024 * 1024
 MAX_EVIDENCE_IMAGES = 64
 
+RPC_CODE_MESSAGES = {
+    0: "success",
+    1: "RPC request failed",
+    2: "invalid RPC request",
+    3: "unsupported RPC method",
+    4: "RPC request rate limited",
+    5: "RPC request timed out",
+    6: "resource state changed",
+    100: "resource not found",
+    102: "reference target initialization failed",
+    104: "target lost",
+    200: "measurement not started",
+    201: "measurement already running",
+    300: "motor unavailable",
+    302: "motor moving",
+    303: "motor limit reached",
+    310: "vertical motor unavailable",
+    400: "cruise unavailable",
+    403: "cruise already running",
+}
+
+
+def rpc_code_message(code: int) -> str:
+    return RPC_CODE_MESSAGES.get(code, f"RPC request failed (code={code})")
+
 
 class PayloadFormat(str, Enum):
     JSON = "json"
@@ -183,9 +208,6 @@ RPC_REQUEST_TYPES: dict[str, tuple[str, type[Message]]] = {
     "setLightLevel": ("set_light_level", pb.SetLightLevelRequest),
     "getLightLevel": ("get_light_level", pb.Empty),
     "snapshot": ("snapshot", pb.SnapshotRequest),
-    "getStorageInfo": ("get_storage_info", pb.Empty),
-    "queryTelemetry": ("query_telemetry", pb.QueryTelemetryRequest),
-    "uploadS3": ("upload_s3", pb.UploadS3Request),
     "ispCtl": ("isp_ctl", pb.IspControlRequest),
     "setMotorAngle": ("set_motor_angle", pb.SetMotorAngleRequest),
     "getMotorAngle": ("get_motor_angle", pb.Empty),
@@ -193,25 +215,14 @@ RPC_REQUEST_TYPES: dict[str, tuple[str, type[Message]]] = {
     "enableMotor": ("enable_motor", pb.Empty),
     "disableMotor": ("disable_motor", pb.Empty),
     "getCruisePaths": ("get_cruise_paths", pb.GetCruisePathsRequest),
-    "setCruisePoint": ("set_cruise_point", pb.SetCruisePointRequest),
-    "removeCruisePoint": ("remove_cruise_point", pb.RemoveCruisePointRequest),
-    "startPatrol": ("start_patrol", pb.StartPatrolRequest),
-    "stopPatrol": ("stop_patrol", pb.Empty),
-    "getPatrolStatus": ("get_patrol_status", pb.Empty),
     "getEvidenceStatus": ("get_evidence_status", pb.EvidenceQueryRequest),
     "retryEvidence": ("retry_evidence", pb.EvidenceQueryRequest),
     "ackEvidenceImages": ("ack_evidence_images", pb.EvidenceImagesAckRequest),
-}
-
-# 0.8.5 设备已经向 StdMqtt 开放这些告警 RPC，但 V1 Protobuf oneof 尚未为其分配
-# 字段编号。JSON 连接可以使用；Protobuf 连接会在发布前给出明确错误，避免发出设备
-# 无法解码的伪 Protobuf 请求。
-JSON_ONLY_RPC_FIELDS: dict[str, str] = {
-    "getAlarmCaps": "get_alarm_caps",
-    "listAlarmRules": "list_alarm_rules",
-    "applyAlarmRules": "apply_alarm_rules",
-    "getAlarmState": "get_alarm_state",
-    "listAlarmHistory": "list_alarm_history",
+    "getAlarmCaps": ("get_alarm_caps", pb.GetAlarmCapsRequest),
+    "listAlarmRules": ("list_alarm_rules", pb.ListAlarmRulesRequest),
+    "applyAlarmRules": ("apply_alarm_rules", pb.ApplyAlarmRulesRequest),
+    "getAlarmState": ("get_alarm_state", pb.GetAlarmStateRequest),
+    "listAlarmHistory": ("list_alarm_history", pb.ListAlarmHistoryRequest),
 }
 
 
@@ -339,8 +350,7 @@ class VdmCodec:
         if req_id == 0 or not -(2**31) <= req_id < 2**31:
             raise ValueError("req_id 必须是非零 signed int32")
         route = RPC_REQUEST_TYPES.get(method)
-        json_only_field = JSON_ONLY_RPC_FIELDS.get(method)
-        if route is None and json_only_field is None:
+        if route is None:
             raise ValueError(f"RPC 方法不属于公开 VDM API: {method}")
         params = params or {}
         if self.payload_format is PayloadFormat.JSON:
@@ -350,11 +360,9 @@ class VdmCodec:
                     ensure_ascii=False,
                     separators=(",", ":"),
                 ).encode("utf-8"),
-                route[0] if route is not None else json_only_field,
+                route[0],
             )
 
-        if route is None:
-            raise ValueError(f"{method} 在 0.8.5 仅支持 StdMqtt JSON Payload")
         response_field, message_type = route
 
         body = message_type()
@@ -369,7 +377,7 @@ class VdmCodec:
     @staticmethod
     def response_info(value: dict[str, Any] | Message) -> tuple[int | None, int, str, str | None]:
         if isinstance(value, pb.RpcResponse):
-            return value.req_id, value.code, value.message, value.WhichOneof("response")
+            return value.req_id, value.code, rpc_code_message(value.code), value.WhichOneof("response")
         if not isinstance(value, dict):
             raise ValueError("RPC 响应类型错误")
         req_id_value = value.get("reqId", value.get("req_id"))
@@ -379,5 +387,4 @@ class VdmCodec:
             code = int(raw_code)
         except (TypeError, ValueError):
             code = 0 if str(raw_code).lower() in {"ok", "success"} else 1
-        message = str(value.get("msg", value.get("message", "")))
-        return req_id, code, message, None
+        return req_id, code, rpc_code_message(code), None

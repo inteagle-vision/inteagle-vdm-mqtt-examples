@@ -18,9 +18,9 @@ test("Topic 映射并拒绝通配符", () => {
   assert.throws(() => VdmTopics.forDevice("bad/#"));
 });
 
-test("32 个公开 RPC 都构造强类型 oneof", () => {
+test("29 个公开 RPC 都构造强类型 oneof", () => {
   const codec = new VdmCodec("protobuf");
-  assert.equal(Object.keys(PUBLIC_RPC_FIELDS).length, 32);
+  assert.equal(Object.keys(PUBLIC_RPC_FIELDS).length, 29);
   let reqId = 100;
   for (const [method, field] of Object.entries(PUBLIC_RPC_FIELDS)) {
     const encoded = codec.encodeRpcRequest(method, {}, reqId++);
@@ -30,11 +30,40 @@ test("32 个公开 RPC 都构造强类型 oneof", () => {
   }
 });
 
+test("8 个不可用 RPC 在两种 Payload 下都被拒绝", () => {
+  const unavailable = [
+    "getStorageInfo", "queryTelemetry", "uploadS3", "setCruisePoint",
+    "removeCruisePoint", "startPatrol", "stopPatrol", "getPatrolStatus",
+  ];
+  for (const payloadFormat of ["json", "protobuf"]) {
+    const codec = new VdmCodec(payloadFormat);
+    for (const method of unavailable) {
+      assert.throws(() => codec.encodeRpcRequest(method, {}, 200), /\u4e0d\u5c5e\u4e8e\u516c\u5f00 VDM API/);
+    }
+  }
+});
+
 test("内部 RPC 在发布前被拒绝", () => {
   assert.throws(
-    () => new VdmCodec("protobuf").encodeRpcRequest("wySetAttributes", {}, 9),
+    () => new VdmCodec("protobuf").encodeRpcRequest("privateDeviceCommand", {}, 9),
     /不属于公开 VDM API/,
   );
+});
+
+test("RPC 错误提示只由本地数字码表生成", () => {
+  const json = new VdmCodec("json").responseInfo({
+    reqId: 8,
+    code: 4,
+    msg: "private device diagnostic",
+  });
+  assert.equal(json.message, "RPC request rate limited");
+
+  const protobuf = new VdmCodec("protobuf").responseInfo({
+    reqId: 9,
+    code: 300,
+    message: "private device diagnostic",
+  });
+  assert.equal(protobuf.message, "motor unavailable");
 });
 
 test("Protobuf 返回强类型对象和完整可读字段", () => {

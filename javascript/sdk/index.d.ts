@@ -14,9 +14,6 @@ export type PublicRpcMethod =
   | "setLightLevel"
   | "getLightLevel"
   | "snapshot"
-  | "getStorageInfo"
-  | "queryTelemetry"
-  | "uploadS3"
   | "ispCtl"
   | "setMotorAngle"
   | "getMotorAngle"
@@ -24,11 +21,6 @@ export type PublicRpcMethod =
   | "enableMotor"
   | "disableMotor"
   | "getCruisePaths"
-  | "setCruisePoint"
-  | "removeCruisePoint"
-  | "startPatrol"
-  | "stopPatrol"
-  | "getPatrolStatus"
   | "getEvidenceStatus"
   | "retryEvidence"
   | "ackEvidenceImages"
@@ -141,5 +133,4 @@ export class VdmMqttClient {
 
 export const SCHEMA_VERSION: 1;
 export const PUBLIC_RPC_FIELDS: Readonly<Record<PublicRpcMethod, string>>;
-export const JSON_ONLY_RPC_FIELDS: Readonly<Record<string, string>>;
 export function parsePayloadFormat(value: string): PayloadFormat;

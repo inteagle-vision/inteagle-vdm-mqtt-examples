@@ -21,9 +21,6 @@ const PUBLIC_RPC_FIELDS = Object.freeze({
   setLightLevel: "setLightLevel",
   getLightLevel: "getLightLevel",
   snapshot: "snapshot",
-  getStorageInfo: "getStorageInfo",
-  queryTelemetry: "queryTelemetry",
-  uploadS3: "uploadS3",
   ispCtl: "ispCtl",
   setMotorAngle: "setMotorAngle",
   getMotorAngle: "getMotorAngle",
@@ -31,23 +28,40 @@ const PUBLIC_RPC_FIELDS = Object.freeze({
   enableMotor: "enableMotor",
   disableMotor: "disableMotor",
   getCruisePaths: "getCruisePaths",
-  setCruisePoint: "setCruisePoint",
-  removeCruisePoint: "removeCruisePoint",
-  startPatrol: "startPatrol",
-  stopPatrol: "stopPatrol",
-  getPatrolStatus: "getPatrolStatus",
   getEvidenceStatus: "getEvidenceStatus",
   retryEvidence: "retryEvidence",
   ackEvidenceImages: "ackEvidenceImages",
-});
-
-const JSON_ONLY_RPC_FIELDS = Object.freeze({
   getAlarmCaps: "getAlarmCaps",
   listAlarmRules: "listAlarmRules",
   applyAlarmRules: "applyAlarmRules",
   getAlarmState: "getAlarmState",
   listAlarmHistory: "listAlarmHistory",
 });
+
+const RPC_CODE_MESSAGES = Object.freeze({
+  0: "success",
+  1: "RPC request failed",
+  2: "invalid RPC request",
+  3: "unsupported RPC method",
+  4: "RPC request rate limited",
+  5: "RPC request timed out",
+  6: "resource state changed",
+  100: "resource not found",
+  102: "reference target initialization failed",
+  104: "target lost",
+  200: "measurement not started",
+  201: "measurement already running",
+  300: "motor unavailable",
+  302: "motor moving",
+  303: "motor limit reached",
+  310: "vertical motor unavailable",
+  400: "cruise unavailable",
+  403: "cruise already running",
+});
+
+function rpcCodeMessage(code) {
+  return RPC_CODE_MESSAGES[code] ?? `RPC request failed (code=${code})`;
+}
 
 const ROOT_TYPES = Object.freeze({
   telemetry: "inteagle.vdm.mqtt.v1.Telemetry",
@@ -190,7 +204,7 @@ class VdmCodec {
     if (!Number.isInteger(reqId) || reqId === 0 || reqId < -2147483648 || reqId > 2147483647) {
       throw new Error("reqId 必须是非零 signed int32");
     }
-    const expectedResponseField = PUBLIC_RPC_FIELDS[method] ?? JSON_ONLY_RPC_FIELDS[method];
+    const expectedResponseField = PUBLIC_RPC_FIELDS[method];
     if (!expectedResponseField) {
       throw new Error(`RPC 方法不属于公开 VDM API: ${method}`);
     }
@@ -202,9 +216,6 @@ class VdmCodec {
         payload: Buffer.from(JSON.stringify({ reqId, method, params })),
         expectedResponseField,
       };
-    }
-    if (Object.hasOwn(JSON_ONLY_RPC_FIELDS, method)) {
-      throw new Error(`${method} 在 0.8.5 仅支持 StdMqtt JSON Payload`);
     }
     const object = {
       schemaVersion: SCHEMA_VERSION,
@@ -229,7 +240,7 @@ class VdmCodec {
       return {
         reqId: value.reqId,
         code: value.code,
-        message: value.message ?? "",
+        message: rpcCodeMessage(value.code),
         responseField,
       };
     }
@@ -245,7 +256,7 @@ class VdmCodec {
     return {
       reqId: Number(reqId),
       code,
-      message: String(value.msg ?? value.message ?? ""),
+      message: rpcCodeMessage(code),
       responseField: null,
     };
   }
@@ -550,7 +561,6 @@ class VdmMqttClient {
 
 module.exports = {
   PUBLIC_RPC_FIELDS,
-  JSON_ONLY_RPC_FIELDS,
   RpcError,
   SCHEMA_VERSION,
   VdmCodec,

@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import com.inteagle.vdm.mqtt.v1.Attributes;
 import com.inteagle.vdm.mqtt.v1.RpcRequest;
+import com.inteagle.vdm.mqtt.v1.RpcResponse;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.security.MessageDigest;
@@ -32,7 +33,26 @@ final class VdmCodecTest {
     VdmCodec codec = new VdmCodec(PayloadFormat.PROTOBUF);
     assertThrows(
         IllegalArgumentException.class,
-        () -> codec.encodeRpcRequest("wySetAttributes", Map.of(), 8));
+        () -> codec.encodeRpcRequest("privateDeviceCommand", Map.of(), 8));
+  }
+
+  @Test
+  void rpcErrorTextIsDerivedLocallyFromNumericCode() throws Exception {
+    VdmCodec jsonCodec = new VdmCodec(PayloadFormat.JSON);
+    VdmCodec.ResponseInfo json = jsonCodec.responseInfo(
+        new com.fasterxml.jackson.databind.ObjectMapper().readTree(
+            "{\"reqId\":8,\"code\":4,\"msg\":\"private device diagnostic\"}"));
+    assertEquals("RPC request rate limited", json.message());
+
+    VdmCodec protobufCodec = new VdmCodec(PayloadFormat.PROTOBUF);
+    VdmCodec.ResponseInfo protobuf = protobufCodec.responseInfo(
+        RpcResponse.newBuilder()
+            .setSchemaVersion(1)
+            .setReqId(9)
+            .setCode(300)
+            .setMessage("private device diagnostic")
+            .build());
+    assertEquals("motor unavailable", protobuf.message());
   }
 
   @Test
@@ -40,19 +60,34 @@ final class VdmCodecTest {
     Set<String> methods = Set.of(
         "getAttr", "setAttr", "reboot", "syncTime", "initRefTargets", "addTargets",
         "getTargets", "setTargets", "deleteTargets", "startMeasurement", "stopMeasurement",
-        "setLightLevel", "getLightLevel", "snapshot", "getStorageInfo", "queryTelemetry",
-        "uploadS3", "ispCtl", "setMotorAngle", "getMotorAngle", "setMotorZero", "enableMotor",
-        "disableMotor", "getCruisePaths", "setCruisePoint", "removeCruisePoint", "startPatrol",
-        "stopPatrol", "getPatrolStatus");
+        "setLightLevel", "getLightLevel", "snapshot", "ispCtl", "setMotorAngle",
+        "getMotorAngle", "setMotorZero", "enableMotor", "disableMotor", "getCruisePaths");
     methods = new java.util.HashSet<>(methods);
-    methods.addAll(Set.of("getEvidenceStatus", "retryEvidence", "ackEvidenceImages"));
-    assertEquals(32, methods.size());
+    methods.addAll(Set.of(
+        "getEvidenceStatus", "retryEvidence", "ackEvidenceImages", "getAlarmCaps",
+        "listAlarmRules", "applyAlarmRules", "getAlarmState", "listAlarmHistory"));
+    assertEquals(29, methods.size());
     VdmCodec codec = new VdmCodec(PayloadFormat.PROTOBUF);
     int reqId = 100;
     for (String method : methods) {
       VdmCodec.RpcEncoding encoded = codec.encodeRpcRequest(method, Map.of(), reqId++);
       RpcRequest request = RpcRequest.parseFrom(encoded.payload());
       assertEquals(encoded.expectedResponseField(), request.getRequestCase().name().toLowerCase());
+    }
+  }
+
+  @Test
+  void unavailableRpcMethodsAreRejectedInBothFormats() {
+    Set<String> unavailable = Set.of(
+        "getStorageInfo", "queryTelemetry", "uploadS3", "setCruisePoint",
+        "removeCruisePoint", "startPatrol", "stopPatrol", "getPatrolStatus");
+    for (PayloadFormat format : List.of(PayloadFormat.JSON, PayloadFormat.PROTOBUF)) {
+      VdmCodec codec = new VdmCodec(format);
+      for (String method : unavailable) {
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> codec.encodeRpcRequest(method, Map.of(), 200));
+      }
     }
   }
 

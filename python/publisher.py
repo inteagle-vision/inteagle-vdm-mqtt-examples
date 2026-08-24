@@ -70,7 +70,6 @@ def protobuf_fixtures() -> list[tuple[str, bytes]]:
         schema_version=1,
         timestamp_s=TIMESTAMP_S,
         event_type=pb.EVENT_TYPE_INIT_REFERENCE_TARGET,
-        message="基准点初始化完成",
     )
     event.init_reference_target.successful_target_ids.append("T01")
 
@@ -100,7 +99,7 @@ def protobuf_fixtures() -> list[tuple[str, bytes]]:
     request = pb.RpcRequest(schema_version=1, req_id=42)
     request.get_attr.keys.extend(("deviceId", "fwVer"))
 
-    response = pb.RpcResponse(schema_version=1, req_id=42, code=0, message="success")
+    response = pb.RpcResponse(schema_version=1, req_id=42, code=0)
     response.get_attr.attributes.schema_version = 1
     response.get_attr.attributes.device_id = "DEMO001"
     response.get_attr.attributes.firmware_version = "example-1.0.0"
@@ -202,7 +201,6 @@ def json_fixtures() -> list[tuple[str, bytes]]:
                 {
                     "reqId": 42,
                     "code": 0,
-                    "msg": "success",
                     "data": {"deviceId": "DEMO001", "fwVer": "example-1.0.0"},
                 }
             ),
@@ -287,11 +285,9 @@ class Publisher:
                     schema_version=1,
                     req_id=rpc_request.req_id,
                     code=0,
-                    message="success",
                 )
                 if rpc_request.WhichOneof("request") != "get_attr":
-                    response.code = 404
-                    response.message = "unsupported test method"
+                    response.code = 3
                 else:
                     response.get_attr.attributes.schema_version = 1
                     response.get_attr.attributes.device_id = "DEMO001"
@@ -301,15 +297,16 @@ class Publisher:
                 rpc_request = json.loads(payload)
                 if int(rpc_request["reqId"]) == 42:
                     return
+                success = rpc_request.get("method") == "getAttr"
                 response_value = {
                     "reqId": int(rpc_request["reqId"]),
-                    "code": 0 if rpc_request.get("method") == "getAttr" else 404,
-                    "msg": "success",
-                    "data": {
+                    "code": 0 if success else 3,
+                }
+                if success:
+                    response_value["data"] = {
                         "deviceId": "DEMO001",
                         "fwVer": "example-1.0.0",
-                    },
-                }
+                    }
                 encoded = json_bytes(response_value)
             info = self.client.publish(
                 f"{self.base_topic}/rpc/resp", encoded, qos=1, retain=False

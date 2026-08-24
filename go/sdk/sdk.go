@@ -286,18 +286,12 @@ var publicRPCFields = map[string]string{
 	"initRefTargets": "init_ref_targets", "addTargets": "add_targets", "getTargets": "get_targets",
 	"setTargets": "set_targets", "deleteTargets": "delete_targets", "startMeasurement": "start_measurement",
 	"stopMeasurement": "stop_measurement", "setLightLevel": "set_light_level", "getLightLevel": "get_light_level",
-	"snapshot": "snapshot", "getStorageInfo": "get_storage_info", "queryTelemetry": "query_telemetry",
-	"uploadS3": "upload_s3", "ispCtl": "isp_ctl", "setMotorAngle": "set_motor_angle",
+	"snapshot": "snapshot", "ispCtl": "isp_ctl", "setMotorAngle": "set_motor_angle",
 	"getMotorAngle": "get_motor_angle", "setMotorZero": "set_motor_zero", "enableMotor": "enable_motor",
-	"disableMotor": "disable_motor", "getCruisePaths": "get_cruise_paths", "setCruisePoint": "set_cruise_point",
-	"removeCruisePoint": "remove_cruise_point", "startPatrol": "start_patrol", "stopPatrol": "stop_patrol",
-	"getPatrolStatus":   "get_patrol_status",
+	"disableMotor": "disable_motor", "getCruisePaths": "get_cruise_paths",
 	"getEvidenceStatus": "get_evidence_status", "retryEvidence": "retry_evidence",
 	"ackEvidenceImages": "ack_evidence_images",
-}
-
-var jsonOnlyRPCFields = map[string]string{
-	"getAlarmCaps": "get_alarm_caps", "listAlarmRules": "list_alarm_rules",
+	"getAlarmCaps":      "get_alarm_caps", "listAlarmRules": "list_alarm_rules",
 	"applyAlarmRules": "apply_alarm_rules", "getAlarmState": "get_alarm_state",
 	"listAlarmHistory": "list_alarm_history",
 }
@@ -307,13 +301,7 @@ func (c Codec) EncodeRPC(method string, params any, reqID int32) ([]byte, string
 		return nil, "", errors.New("reqID 必须是非零 signed int32")
 	}
 	fieldName, ok := publicRPCFields[method]
-	if !ok && c.Format == JSON {
-		fieldName, ok = jsonOnlyRPCFields[method]
-	}
 	if !ok {
-		if _, jsonOnly := jsonOnlyRPCFields[method]; jsonOnly {
-			return nil, "", fmt.Errorf("%s 在 0.8.5 仅支持 StdMqtt JSON Payload", method)
-		}
 		return nil, "", fmt.Errorf("RPC 方法不属于公开 VDM API: %s", method)
 	}
 	if params == nil {
@@ -481,6 +469,24 @@ type RPCError struct {
 	Message string
 }
 
+func rpcCodeMessage(code int32) string {
+	messages := map[int32]string{
+		0: "success", 1: "RPC request failed", 2: "invalid RPC request",
+		3: "unsupported RPC method", 4: "RPC request rate limited",
+		5: "RPC request timed out", 6: "resource state changed",
+		100: "resource not found", 102: "reference target initialization failed",
+		104: "target lost", 200: "measurement not started",
+		201: "measurement already running", 300: "motor unavailable",
+		302: "motor moving", 303: "motor limit reached",
+		310: "vertical motor unavailable", 400: "cruise unavailable",
+		403: "cruise already running",
+	}
+	if message, ok := messages[code]; ok {
+		return message
+	}
+	return fmt.Sprintf("RPC request failed (code=%d)", code)
+}
+
 func (e *RPCError) Error() string {
 	return fmt.Sprintf("RPC req_id=%d code=%d: %s", e.ReqID, e.Code, e.Message)
 }
@@ -546,7 +552,7 @@ func responseInfo(value any) (int32, int32, string, string, error) {
 		if selected != nil {
 			field = string(selected.Name())
 		}
-		return response.GetReqId(), response.GetCode(), response.GetMessage(), field, nil
+		return response.GetReqId(), response.GetCode(), rpcCodeMessage(response.GetCode()), field, nil
 	case map[string]any:
 		rawID, ok := response["reqId"]
 		if !ok {
@@ -565,11 +571,7 @@ func responseInfo(value any) (int32, int32, string, string, error) {
 				code = 0
 			}
 		}
-		message, _ := response["msg"].(string)
-		if message == "" {
-			message, _ = response["message"].(string)
-		}
-		return int32(reqFloat), code, message, "", nil
+		return int32(reqFloat), code, rpcCodeMessage(code), "", nil
 	default:
 		return 0, 0, "", "", errors.New("RPC 响应类型错误")
 	}

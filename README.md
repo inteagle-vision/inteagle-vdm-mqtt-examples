@@ -80,7 +80,7 @@ NANOMQ_PORT=28883 ./run_demo.sh protobuf
 
 四个订阅端都根据 Topic 选择明确的 Protobuf 根消息。带 `schema_version`
 的消息必须等于 `1`；紧凑的 `AlarmEvidence` 本身不重复版本字段。SDK 覆盖
-32 个强类型 Protobuf RPC，包括证据查询、重试和应用确认。
+29 个强类型 Protobuf RPC，包括告警管理、证据查询、重试和应用确认。
 
 <a id="sdk"></a>
 
@@ -89,9 +89,11 @@ NANOMQ_PORT=28883 ./run_demo.sh protobuf
 - 按连接配置解析 JSON 或 Protobuf，不猜测 Payload 格式。
 - 返回语言对应的 Protobuf 消息对象，同时提供 JSON 兼容字段视图。
 - 解析位移/环境量遥测、设备属性、事件、告警、证据状态、RPC 以及两类图片 Header。
-- 从字典/Map 构造 32 个强类型 Protobuf RPC；告警规则/历史的 5 个 RPC 在 0.8.5 中使用 JSON Payload。
+- 从字典/Map 构造 29 个强类型 Protobuf RPC；JSON 与 Protobuf 均支持 5 个告警管理 RPC。
 - Python 示例提供磁盘优先的有界分块重组、JPEG/SHA-256 校验和 `ackEvidenceImages`。
 - 自动维护并发 RPC 的 `req_id`、超时和错误码，断线重连后自动重新订阅。
+- 四种语言都只以 `code == 0` 判断成功；`1` 是通用失败，其他非零码是可直接处理的细分错误。
+- RPC 在线 Payload 不携带重复的 `msg/message` 文本；SDK 在本地按数字错误码生成可读说明。
 - 每个 SDK 客户端实例拥有独立 Topic 和 pending 表；不同设备或云连接不能共享实例。
 
 最后一条是 RPC 隔离边界：设备端按发起请求的 `cloudId` 返回响应，云端 SDK 再按当前
@@ -247,7 +249,7 @@ python evidence_receiver.py
 `receipt.json`。`receipt.json` 是客户接收回执，不伪装成设备内部
 `manifest.json`。示例不包含 Inteagle OSS/STS 凭据或内部上传接口。
 
-告警配置和历史查询在 0.8.5 中建议将 StdMqtt 连接配置为 JSON：
+告警配置和历史查询可以使用 JSON 或 Protobuf：
 
 ```javascript
 const state = await client.call("getAlarmState", {});
@@ -256,9 +258,9 @@ const incident = await client.call("listAlarmHistory", { alarmId: "9754138318563
 ```
 
 精确按 `alarmId` 查询 `listAlarmHistory` 时，设备会在该生命周期记录中
-附加当前可见的证据摘要。Protobuf V1 仍可强类型调用
-`getEvidenceStatus` / `retryEvidence` / `ackEvidenceImages`；告警规则、当前状态
-和历史的 Protobuf oneof 字段将在后续协议版本中增加。
+附加当前可见的证据摘要。Protobuf V1 已为
+`getAlarmCaps` / `listAlarmRules` / `applyAlarmRules` / `getAlarmState` /
+`listAlarmHistory` 提供强类型 oneof。
 
 <a id="language-examples"></a>
 

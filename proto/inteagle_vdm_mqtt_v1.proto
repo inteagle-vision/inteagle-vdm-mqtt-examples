@@ -74,11 +74,7 @@ enum ReportMetric {
   REPORT_METRIC_UNSPECIFIED = 0;
   REPORT_METRIC_DX = 1;
   REPORT_METRIC_DY = 2;
-  REPORT_METRIC_DZ = 3;
-  REPORT_METRIC_TILT = 4;
-  REPORT_METRIC_SX = 5;
-  REPORT_METRIC_SY = 6;
-  REPORT_METRIC_SZ = 7;
+  reserved 3 to 7;
 }
 
 // 原始相机画面坐标系中的像素矩形。
@@ -212,6 +208,7 @@ message DynamicObject {
 }
 
 enum EventType {
+  reserved 9 to 11;
   EVENT_TYPE_UNSPECIFIED = 0;
   EVENT_TYPE_INIT_REFERENCE_TARGET = 1;
   EVENT_TYPE_CRUISE_POINT_REACHED = 2;
@@ -221,15 +218,13 @@ enum EventType {
   EVENT_TYPE_SENSOR_FAILURE = 6;
   EVENT_TYPE_CALIBRATION_ERROR = 7;
   EVENT_TYPE_CALIBRATION_REQUIRED = 8;
-  EVENT_TYPE_FACTORY_CALIBRATION = 9;
-  EVENT_TYPE_COMMAND_ERROR = 10;
-  EVENT_TYPE_QUALITY_DETECTION_STATUS = 11;
 }
 
 message TargetInitializationFailure {
   string target_id = 1;
   int32 code = 2;
-  string message = 3;
+  // 保留字段号兼容旧客户端；当前设备只发送 code，不发送重复错误文本。
+  string message = 3 [deprecated = true];
 }
 
 message InitReferenceTargetEvent {
@@ -249,18 +244,18 @@ message TargetEvent {
   optional string status = 2; // 状态值允许扩展，具体取值以事件文档为准。
 }
 
-// event_type 必须与 detail oneof 中的字段一致。仅当事件尚未定义稳定的明细结构时，
-// 才允许使用 extension。
+// event_type 必须与 detail oneof 中的字段一致。未定义稳定客户契约的设备内部
+// 事件不会通过 StdMqtt 上报。
 message Event {
+  reserved 4, 100;
+  reserved "message", "extension";
   uint32 schema_version = 1;
   uint64 timestamp_s = 2;
   EventType event_type = 3;
-  optional string message = 4;
   oneof detail {
     InitReferenceTargetEvent init_reference_target = 10;
     CruisePointReachedEvent cruise_point_reached = 11;
     TargetEvent target = 12;
-    DynamicObject extension = 100;
   }
 }
 
@@ -546,6 +541,123 @@ message StartPatrolRequest {
   optional uint32 path_id = 1;
 }
 
+// Alarm management ---------------------------------------------------------
+// These messages intentionally model the public rule contract instead of
+// carrying JSON in bytes/string fields. Optional scalars preserve the JSON
+// contract's distinction between an omitted value and an explicit zero/false.
+
+enum AlarmActionType {
+  ALARM_ACTION_TYPE_UNSPECIFIED = 0;
+  ALARM_ACTION_TYPE_SNAPSHOT = 1;
+}
+
+enum AlarmScope {
+  ALARM_SCOPE_UNSPECIFIED = 0;
+  ALARM_SCOPE_TARGET = 1;
+  ALARM_SCOPE_DEVICE = 2;
+}
+
+enum AlarmIncidentState {
+  ALARM_INCIDENT_STATE_UNSPECIFIED = 0;
+  ALARM_INCIDENT_STATE_ACTIVE = 1;
+  ALARM_INCIDENT_STATE_CLEARED = 2;
+}
+
+message AlarmActionDefinition {
+  AlarmActionType action_type = 1;
+  repeated AlarmLevel levels = 2;
+  repeated AlarmTransition transitions = 3;
+}
+
+message NumericAlarmLevelDefinition {
+  float enter = 1;
+  uint32 enter_for_ms = 2;
+}
+
+message NumericAlarmLevels {
+  optional NumericAlarmLevelDefinition alert = 1;
+  optional NumericAlarmLevelDefinition alarm = 2;
+  optional NumericAlarmLevelDefinition action = 3;
+}
+
+message TargetLostAlarmLevelDefinition {
+  uint32 lost_for_ms = 1;
+}
+
+message TargetLostAlarmLevels {
+  optional TargetLostAlarmLevelDefinition alert = 1;
+  optional TargetLostAlarmLevelDefinition alarm = 2;
+  optional TargetLostAlarmLevelDefinition action = 3;
+}
+
+message AlarmRuleCommon {
+  optional uint32 id = 1; // Omit when creating a rule; updates require non-zero.
+  optional string name = 2;
+  optional bool enabled = 3; // Omitted means true.
+  repeated AlarmActionDefinition actions = 4;
+}
+
+message DisplacementLimitAlarmRule {
+  AlarmRuleCommon common = 1;
+  repeated string target_ids = 2;
+  AlarmMetric metric = 3;
+  DisplacementDirection direction = 4;
+  NumericAlarmLevels levels = 5;
+  optional uint32 recover_for_ms = 6;
+}
+
+message DisplacementRateAlarmRule {
+  AlarmRuleCommon common = 1;
+  repeated string target_ids = 2;
+  AlarmMetric metric = 3;
+  DisplacementDirection direction = 4;
+  uint32 window_ms = 5;
+  NumericAlarmLevels levels = 6;
+  optional uint32 recover_for_ms = 7;
+}
+
+message TargetLostAlarmRule {
+  AlarmRuleCommon common = 1;
+  repeated string target_ids = 2;
+  TargetLostAlarmLevels levels = 3;
+  uint32 recover_for_ms = 4;
+}
+
+message VoltageLowAlarmRule {
+  AlarmRuleCommon common = 1;
+  AlarmType alarm_type = 2; // Must be VIN_LOW or VBAT_LOW.
+  NumericAlarmLevels levels = 3;
+  optional uint32 recover_for_ms = 4;
+}
+
+message AlarmRuleDefinition {
+  oneof rule {
+    DisplacementLimitAlarmRule displacement_limit = 1;
+    DisplacementRateAlarmRule displacement_rate = 2;
+    TargetLostAlarmRule target_lost = 3;
+    VoltageLowAlarmRule voltage_low = 4;
+  }
+}
+
+message GetAlarmCapsRequest {}
+
+message ListAlarmRulesRequest {
+  optional string cursor = 1;
+}
+
+message ApplyAlarmRulesRequest {
+  repeated AlarmRuleDefinition upsert = 1;
+  repeated uint32 delete_ids = 2;
+}
+
+message GetAlarmStateRequest {}
+
+message ListAlarmHistoryRequest {
+  optional string cursor = 1;
+  optional uint32 limit = 2;
+  optional string alarm_id = 3; // Decimal uint64 text, matching JSON.
+}
+
 message RpcRequest {
   uint32 schema_version = 1; // 当前版本必须设置为 1。
   int32 req_id = 2;
@@ -564,9 +676,9 @@ message RpcRequest {
     SetLightLevelRequest set_light_level = 32;
     Empty get_light_level = 33;
     SnapshotRequest snapshot = 34;
-    Empty get_storage_info = 40;
-    QueryTelemetryRequest query_telemetry = 41;
-    UploadS3Request upload_s3 = 42;
+    Empty get_storage_info = 40 [deprecated = true];
+    QueryTelemetryRequest query_telemetry = 41 [deprecated = true];
+    UploadS3Request upload_s3 = 42 [deprecated = true];
     IspControlRequest isp_ctl = 50;
     SetMotorAngleRequest set_motor_angle = 60;
     Empty get_motor_angle = 61;
@@ -574,14 +686,19 @@ message RpcRequest {
     Empty enable_motor = 63;
     Empty disable_motor = 64;
     GetCruisePathsRequest get_cruise_paths = 70;
-    SetCruisePointRequest set_cruise_point = 71;
-    RemoveCruisePointRequest remove_cruise_point = 72;
-    StartPatrolRequest start_patrol = 73;
-    Empty stop_patrol = 74;
-    Empty get_patrol_status = 75;
+    SetCruisePointRequest set_cruise_point = 71 [deprecated = true];
+    RemoveCruisePointRequest remove_cruise_point = 72 [deprecated = true];
+    StartPatrolRequest start_patrol = 73 [deprecated = true];
+    Empty stop_patrol = 74 [deprecated = true];
+    Empty get_patrol_status = 75 [deprecated = true];
     EvidenceQueryRequest get_evidence_status = 80;
     EvidenceQueryRequest retry_evidence = 81;
     EvidenceImagesAckRequest ack_evidence_images = 82;
+    GetAlarmCapsRequest get_alarm_caps = 90;
+    ListAlarmRulesRequest list_alarm_rules = 91;
+    ApplyAlarmRulesRequest apply_alarm_rules = 92;
+    GetAlarmStateRequest get_alarm_state = 93;
+    ListAlarmHistoryRequest list_alarm_history = 94;
   }
 }
 
@@ -623,13 +740,136 @@ message EvidenceStatusResponse {
   optional AlarmEvidence evidence = 2;
 }
 
-// code != 0 时可以不设置 response，message 提供可读的错误原因。code == 0 时
-// 必须选择该方法对应的 response 字段；无响应数据的方法也必须选择 Empty 字段。
+message AlarmRuleCapability {
+  AlarmType alarm_type = 1;
+  AlarmScope scope = 2;
+  repeated TargetRole target_roles = 3;
+  repeated AlarmMetric metrics = 4;
+  repeated DisplacementDirection directions = 5;
+  optional AlarmRateWindowCapability window_ms = 6;
+}
+
+message AlarmRateWindowCapability {
+  uint32 short_minimum = 1;
+  uint32 short_maximum = 2;
+  uint32 short_step = 3;
+  repeated uint32 fixed = 4;
+}
+
+message AlarmActionCapability {
+  AlarmActionType action_type = 1;
+  repeated AlarmType rule_types = 2;
+}
+
+message AlarmLimits {
+  uint32 rules = 1;
+  uint32 targets = 2;
+  uint32 instances = 3;
+  uint32 actions_per_rule = 4;
+  uint32 rule_name_bytes = 5;
+  uint32 request_bytes = 6;
+  uint32 response_bytes = 7;
+  uint32 batch_rules = 8;
+  uint32 history_incidents = 9;
+  uint32 history_events = 10;
+  uint32 history_page = 11;
+}
+
+message GetAlarmCapsResponse {
+  uint32 api_version = 1;
+  bool alarm_service_ready = 2;
+  bool alarm_history_ready = 3;
+  repeated AlarmRuleCapability rule_types = 4;
+  repeated AlarmLevel levels = 5;
+  repeated AlarmTransition transitions = 6;
+  uint32 numeric_recover_for_ms = 7;
+  repeated AlarmActionCapability actions = 8;
+  AlarmLimits limits = 9;
+}
+
+message AlarmRuleListError {
+  enum Code {
+    CODE_UNSPECIFIED = 0;
+    CODE_CONFIG_CHANGED = 1;
+  }
+  Code code = 1;
+}
+
+message ListAlarmRulesResponse {
+  repeated AlarmRuleDefinition items = 1;
+  optional string next_cursor = 2;
+  // Retained only for wire compatibility. Current devices report pagination
+  // conflicts through RpcResponse.code=6 and leave this field unset.
+  optional AlarmRuleListError error = 3 [deprecated = true];
+}
+
+message ApplyAlarmRulesResponse {
+  repeated uint32 created_ids = 1;
+}
+
+message ActiveAlarmState {
+  string alarm_id = 1;
+  uint32 rule_id = 2;
+  AlarmType alarm_type = 3;
+  optional AlarmLevel level = 4;
+  optional string target_id = 5;
+}
+
+message GetAlarmStateResponse {
+  repeated ActiveAlarmState active = 1;
+}
+
+message AlarmHistoryDetail {
+  oneof detail {
+    DisplacementAlarmDetail displacement = 1;
+    DisplacementRateAlarmDetail displacement_rate = 2;
+    TargetLostAlarmDetail target_lost = 3;
+    VoltageAlarmDetail voltage = 4;
+  }
+}
+
+message AlarmEvidenceSummary {
+  string event_id = 1;
+  EvidenceKind kind = 2;
+  EvidenceState state = 3;
+  uint64 captured_at = 4;
+  uint64 updated_at = 5;
+  uint32 camera_id = 6;
+  optional string view = 7;
+  uint32 image_count = 8;
+  bool partial = 9;
+  optional string evidence_id = 10;
+  optional EvidenceFailureReason reason = 11;
+}
+
+message AlarmHistoryIncident {
+  string alarm_id = 1;
+  uint32 rule_id = 2;
+  AlarmType alarm_type = 3;
+  AlarmIncidentState state = 4;
+  optional AlarmLevel level = 5;
+  uint64 started_at = 6;
+  uint64 updated_at = 7;
+  optional uint64 cleared_at = 8;
+  string last_event_id = 9;
+  AlarmTransition transition = 10;
+  optional AlarmHistoryDetail detail = 11;
+  repeated AlarmEvidenceSummary evidence = 12;
+}
+
+message ListAlarmHistoryResponse {
+  repeated AlarmHistoryIncident items = 1;
+  optional string next_cursor = 2;
+}
+
+// code != 0 时不设置 response。当前版本只传数值错误码，message 保留字段号用于兼容
+// 旧生成代码但设备始终置空。code == 0 时必须选择该方法对应的 response 字段；
+// 无响应数据的方法也必须选择 Empty 字段。
 message RpcResponse {
   uint32 schema_version = 1; // 当前版本必须设置为 1。
   int32 req_id = 2;
   int32 code = 3; // 0 表示成功；非 0 表示设备返回错误。
-  string message = 4;
+  string message = 4 [deprecated = true];
   oneof response {
     GetAttributesResponse get_attr = 10;
     Empty set_attr = 11;
@@ -645,9 +885,9 @@ message RpcResponse {
     Empty set_light_level = 32;
     GetLightLevelResponse get_light_level = 33;
     Empty snapshot = 34;
-    DynamicObjectResponse get_storage_info = 40;
-    DynamicObjectResponse query_telemetry = 41;
-    DynamicObjectResponse upload_s3 = 42;
+    DynamicObjectResponse get_storage_info = 40 [deprecated = true];
+    DynamicObjectResponse query_telemetry = 41 [deprecated = true];
+    DynamicObjectResponse upload_s3 = 42 [deprecated = true];
     DynamicObjectResponse isp_ctl = 50;
     Empty set_motor_angle = 60;
     GetMotorAngleResponse get_motor_angle = 61;
@@ -655,13 +895,18 @@ message RpcResponse {
     Empty enable_motor = 63;
     Empty disable_motor = 64;
     DynamicValueResponse get_cruise_paths = 70;
-    Empty set_cruise_point = 71;
-    Empty remove_cruise_point = 72;
-    Empty start_patrol = 73;
-    Empty stop_patrol = 74;
-    DynamicObjectResponse get_patrol_status = 75;
+    Empty set_cruise_point = 71 [deprecated = true];
+    Empty remove_cruise_point = 72 [deprecated = true];
+    Empty start_patrol = 73 [deprecated = true];
+    Empty stop_patrol = 74 [deprecated = true];
+    DynamicObjectResponse get_patrol_status = 75 [deprecated = true];
     EvidenceStatusResponse get_evidence_status = 80;
     EvidenceStatusResponse retry_evidence = 81;
     EvidenceStatusResponse ack_evidence_images = 82;
+    GetAlarmCapsResponse get_alarm_caps = 90;
+    ListAlarmRulesResponse list_alarm_rules = 91;
+    ApplyAlarmRulesResponse apply_alarm_rules = 92;
+    GetAlarmStateResponse get_alarm_state = 93;
+    ListAlarmHistoryResponse list_alarm_history = 94;
   }
 }

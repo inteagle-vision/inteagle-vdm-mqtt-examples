@@ -39,9 +39,6 @@ public final class VdmCodec {
       Map.entry("setLightLevel", "set_light_level"),
       Map.entry("getLightLevel", "get_light_level"),
       Map.entry("snapshot", "snapshot"),
-      Map.entry("getStorageInfo", "get_storage_info"),
-      Map.entry("queryTelemetry", "query_telemetry"),
-      Map.entry("uploadS3", "upload_s3"),
       Map.entry("ispCtl", "isp_ctl"),
       Map.entry("setMotorAngle", "set_motor_angle"),
       Map.entry("getMotorAngle", "get_motor_angle"),
@@ -49,21 +46,34 @@ public final class VdmCodec {
       Map.entry("enableMotor", "enable_motor"),
       Map.entry("disableMotor", "disable_motor"),
       Map.entry("getCruisePaths", "get_cruise_paths"),
-      Map.entry("setCruisePoint", "set_cruise_point"),
-      Map.entry("removeCruisePoint", "remove_cruise_point"),
-      Map.entry("startPatrol", "start_patrol"),
-      Map.entry("stopPatrol", "stop_patrol"),
-      Map.entry("getPatrolStatus", "get_patrol_status"),
       Map.entry("getEvidenceStatus", "get_evidence_status"),
       Map.entry("retryEvidence", "retry_evidence"),
-      Map.entry("ackEvidenceImages", "ack_evidence_images"));
-
-  private static final Map<String, String> JSON_ONLY_RPC_FIELDS = Map.ofEntries(
+      Map.entry("ackEvidenceImages", "ack_evidence_images"),
       Map.entry("getAlarmCaps", "get_alarm_caps"),
       Map.entry("listAlarmRules", "list_alarm_rules"),
       Map.entry("applyAlarmRules", "apply_alarm_rules"),
       Map.entry("getAlarmState", "get_alarm_state"),
       Map.entry("listAlarmHistory", "list_alarm_history"));
+
+  private static final Map<Integer, String> RPC_CODE_MESSAGES = Map.ofEntries(
+      Map.entry(0, "success"),
+      Map.entry(1, "RPC request failed"),
+      Map.entry(2, "invalid RPC request"),
+      Map.entry(3, "unsupported RPC method"),
+      Map.entry(4, "RPC request rate limited"),
+      Map.entry(5, "RPC request timed out"),
+      Map.entry(6, "resource state changed"),
+      Map.entry(100, "resource not found"),
+      Map.entry(102, "reference target initialization failed"),
+      Map.entry(104, "target lost"),
+      Map.entry(200, "measurement not started"),
+      Map.entry(201, "measurement already running"),
+      Map.entry(300, "motor unavailable"),
+      Map.entry(302, "motor moving"),
+      Map.entry(303, "motor limit reached"),
+      Map.entry(310, "vertical motor unavailable"),
+      Map.entry(400, "cruise unavailable"),
+      Map.entry(403, "cruise already running"));
 
   public record RpcEncoding(byte[] payload, String expectedResponseField) {
     public RpcEncoding {
@@ -157,13 +167,7 @@ public final class VdmCodec {
       throw new IllegalArgumentException("reqId 必须是非零 signed int32");
     }
     String fieldName = PUBLIC_RPC_FIELDS.get(method);
-    if (fieldName == null && format == PayloadFormat.JSON) {
-      fieldName = JSON_ONLY_RPC_FIELDS.get(method);
-    }
     if (fieldName == null) {
-      if (JSON_ONLY_RPC_FIELDS.containsKey(method)) {
-        throw new IllegalArgumentException(method + " 在 0.8.5 仅支持 StdMqtt JSON Payload");
-      }
       throw new IllegalArgumentException("RPC 方法不属于公开 VDM API: " + method);
     }
     Map<String, ?> values = params == null ? Map.of() : params;
@@ -196,7 +200,7 @@ public final class VdmCodec {
       return new ResponseInfo(
           response.getReqId(),
           response.getCode(),
-          response.getMessage(),
+          rpcCodeMessage(response.getCode()),
           selected == null ? null : selected.getName());
     }
     if (!(value instanceof JsonNode node) || !node.isObject()) {
@@ -207,9 +211,12 @@ public final class VdmCodec {
       throw new IllegalArgumentException("JSON RPC 响应缺少 reqId");
     }
     int code = parseCode(node.get("code"));
-    JsonNode messageNode = node.has("msg") ? node.get("msg") : node.get("message");
     return new ResponseInfo(
-        reqNode.intValue(), code, messageNode == null ? "" : messageNode.asText(), null);
+        reqNode.intValue(), code, rpcCodeMessage(code), null);
+  }
+
+  private static String rpcCodeMessage(int code) {
+    return RPC_CODE_MESSAGES.getOrDefault(code, "RPC request failed (code=" + code + ")");
   }
 
   private static int parseCode(JsonNode node) {

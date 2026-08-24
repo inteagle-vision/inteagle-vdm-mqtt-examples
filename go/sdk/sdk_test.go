@@ -29,14 +29,36 @@ func TestProtobufRPCUsesTypedOneof(t *testing.T) {
 
 func TestInternalRPCIsRejected(t *testing.T) {
 	codec := Codec{Format: Protobuf}
-	if _, _, err := codec.EncodeRPC("wySetAttributes", map[string]any{}, 8); err == nil {
+	if _, _, err := codec.EncodeRPC("privateDeviceCommand", map[string]any{}, 8); err == nil {
 		t.Fatal("internal method must be rejected")
 	}
 }
 
+func TestRPCErrorTextIsDerivedLocallyFromNumericCode(t *testing.T) {
+	_, _, message, _, err := responseInfo(map[string]any{
+		"reqId": float64(8), "code": float64(4), "msg": "private device diagnostic",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if message != "RPC request rate limited" {
+		t.Fatalf("unexpected local message: %s", message)
+	}
+
+	_, _, message, _, err = responseInfo(&vdmmqttv1.RpcResponse{
+		SchemaVersion: 1, ReqId: 9, Code: 300, Message: "private device diagnostic",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if message != "motor unavailable" {
+		t.Fatalf("unexpected local message: %s", message)
+	}
+}
+
 func TestAllPublicRPCMethodsBuildTypedBody(t *testing.T) {
-	if len(publicRPCFields) != 32 {
-		t.Fatalf("expected 32 public methods, got %d", len(publicRPCFields))
+	if len(publicRPCFields) != 29 {
+		t.Fatalf("expected 29 public methods, got %d", len(publicRPCFields))
 	}
 	codec := Codec{Format: Protobuf}
 	reqID := int32(100)
@@ -58,6 +80,23 @@ func TestAllPublicRPCMethodsBuildTypedBody(t *testing.T) {
 			}
 		})
 		reqID++
+	}
+}
+
+func TestUnavailableRPCMethodsAreRejectedInBothFormats(t *testing.T) {
+	unavailable := []string{
+		"getStorageInfo", "queryTelemetry", "uploadS3", "setCruisePoint",
+		"removeCruisePoint", "startPatrol", "stopPatrol", "getPatrolStatus",
+	}
+	for _, format := range []PayloadFormat{JSON, Protobuf} {
+		codec := Codec{Format: format}
+		for _, method := range unavailable {
+			t.Run(string(format)+"/"+method, func(t *testing.T) {
+				if _, _, err := codec.EncodeRPC(method, map[string]any{}, 200); err == nil {
+					t.Fatalf("unavailable method %s must be rejected", method)
+				}
+			})
+		}
 	}
 }
 

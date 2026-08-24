@@ -45,13 +45,28 @@ class VdmCodecTests(unittest.TestCase):
         )
         self.assertEqual(expected, "get_targets")
 
+    def test_rpc_error_text_is_derived_locally_from_numeric_code(self) -> None:
+        json_info = VdmCodec("json").response_info(
+            {"reqId": 8, "code": 4, "msg": "private device diagnostic"}
+        )
+        self.assertEqual(json_info[2], "RPC request rate limited")
+
+        response = pb.RpcResponse(
+            schema_version=1,
+            req_id=9,
+            code=300,
+            message="private device diagnostic",
+        )
+        protobuf_info = VdmCodec("protobuf").response_info(response)
+        self.assertEqual(protobuf_info[2], "motor unavailable")
+
     def test_internal_rpc_name_is_rejected_before_publish(self) -> None:
         with self.assertRaises(ValueError):
-            VdmCodec("protobuf").encode_rpc_request("wySetAttributes", {}, 9)
+            VdmCodec("protobuf").encode_rpc_request("privateDeviceCommand", {}, 9)
 
     def test_all_public_rpc_methods_build_a_typed_body(self) -> None:
         codec = VdmCodec("protobuf")
-        self.assertEqual(len(RPC_REQUEST_TYPES), 32)
+        self.assertEqual(len(RPC_REQUEST_TYPES), 29)
         for req_id, (method, (expected, _message_type)) in enumerate(
             RPC_REQUEST_TYPES.items(), start=100
         ):
@@ -60,6 +75,18 @@ class VdmCodecTests(unittest.TestCase):
                 request = pb.RpcRequest.FromString(payload)
                 self.assertEqual(request.WhichOneof("request"), expected)
                 self.assertEqual(actual, expected)
+
+    def test_unavailable_rpc_methods_are_rejected_in_both_formats(self) -> None:
+        unavailable = (
+            "getStorageInfo", "queryTelemetry", "uploadS3", "setCruisePoint",
+            "removeCruisePoint", "startPatrol", "stopPatrol", "getPatrolStatus",
+        )
+        for payload_format in ("json", "protobuf"):
+            codec = VdmCodec(payload_format)
+            for method in unavailable:
+                with self.subTest(payload_format=payload_format, method=method):
+                    with self.assertRaises(ValueError):
+                        codec.encode_rpc_request(method, {}, 200)
 
     def test_protobuf_schema_version_is_checked(self) -> None:
         topics = VdmTopics.for_device("DEMO001")
