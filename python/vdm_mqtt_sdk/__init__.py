@@ -9,9 +9,16 @@ from .codec import (
     VdmCodec,
     VdmTopics,
 )
-from .evidence import CompletedEvidencePackage, EvidencePackageAssembler
+from .evidence import (
+    AlarmSnapshotPackageAssembler,
+    CompletedAlarmSnapshotPackage,
+    CompletedEvidencePackage,
+    EvidencePackageAssembler,
+)
 
 __all__ = [
+    "AlarmSnapshotPackageAssembler",
+    "CompletedAlarmSnapshotPackage",
     "DecodedPayload",
     "CompletedEvidencePackage",
     "EvidencePackageChunk",

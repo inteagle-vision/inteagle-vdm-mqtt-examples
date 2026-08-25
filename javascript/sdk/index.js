@@ -3,6 +3,7 @@
 const path = require("node:path");
 const mqtt = require("mqtt");
 const protobuf = require("protobufjs");
+const { AlarmSnapshotPackageAssembler } = require("./snapshot-package");
 
 const SCHEMA_VERSION = 1;
 
@@ -286,10 +287,10 @@ class VdmCodec {
     const headerLength = 76;
     const chunkBytes = 128 * 1024;
     if (payload.length < headerLength) {
-      throw new Error("告警证据包 Payload 小于 76 字节固定 Header");
+      throw new Error("告警抓拍图像包 Payload 小于 76 字节固定 Header");
     }
     if (payload[0] !== 2 || payload[1] !== headerLength || payload[2] !== 1 || payload[3] !== 1) {
-      throw new Error("当前只支持 USTAR SNAPSHOT 证据包");
+      throw new Error("当前只支持 USTAR SNAPSHOT 抓拍图像包");
     }
     const eventId = payload.readBigUInt64BE(4);
     const packageLength = payload.readBigUInt64BE(12);
@@ -308,11 +309,11 @@ class VdmCodec {
         || chunkCount !== expectedCount || chunkIndex >= chunkCount
         || chunkOffset !== expectedOffset || chunkLength !== expectedLength
         || payload.length !== headerLength + chunkLength || flags !== 0) {
-      throw new Error("告警证据包身份、分块范围、长度或 flags 非法");
+      throw new Error("告警抓拍图像包身份、分块范围、长度或 flags 非法");
     }
     const chunk = Buffer.from(payload.subarray(headerLength));
     if (chunkIndex === 0 && (chunk.length < 262 || chunk.subarray(257, 262).toString("ascii") !== "ustar")) {
-      throw new Error("告警证据包首块缺少 USTAR 标识");
+      throw new Error("告警抓拍图像包首块缺少 USTAR 标识");
     }
     return {
       messageType: 2,
@@ -498,6 +499,35 @@ class VdmMqttClient {
     }
   }
 
+  getEvidenceStatus(eventId, options = {}) {
+    return this.call("getEvidenceStatus", {
+      eventId: normalizeEventId(eventId),
+      kind: this.snapshotKind(),
+    }, options);
+  }
+
+  retryEvidence(eventId, options = {}) {
+    return this.call("retryEvidence", {
+      eventId: normalizeEventId(eventId),
+      kind: this.snapshotKind(),
+    }, options);
+  }
+
+  ackEvidencePackage(eventId, packageSha256, options = {}) {
+    if (!/^[0-9a-f]{64}$/.test(String(packageSha256))) {
+      throw new Error("packageSha256 必须是 64 个小写十六进制字符");
+    }
+    return this.call("ackEvidencePackage", {
+      eventId: normalizeEventId(eventId),
+      kind: this.snapshotKind(),
+      packageSha256,
+    }, options);
+  }
+
+  snapshotKind() {
+    return this.config.payloadFormat === "protobuf" ? "EVIDENCE_KIND_SNAPSHOT" : "SNAPSHOT";
+  }
+
   nextRequestId() {
     do {
       this.nextReqId = this.nextReqId >= 2147483647 ? -2147483648 : this.nextReqId + 1;
@@ -548,6 +578,7 @@ class VdmMqttClient {
 }
 
 module.exports = {
+  AlarmSnapshotPackageAssembler,
   PUBLIC_RPC_FIELDS,
   RpcError,
   SCHEMA_VERSION,
@@ -556,3 +587,11 @@ module.exports = {
   VdmTopics,
   parsePayloadFormat,
 };
+
+function normalizeEventId(eventId) {
+  const value = typeof eventId === "bigint" ? eventId.toString() : String(eventId);
+  if (!/^[1-9][0-9]*$/.test(value) || BigInt(value) > 0xffff_ffff_ffff_ffffn) {
+    throw new Error("eventId 必须是非零十进制整数");
+  }
+  return value;
+}

@@ -278,11 +278,11 @@ public final class VdmCodec {
     final int headerLength = 76;
     final int chunkBytes = 128 * 1024;
     if (payload.length < headerLength) {
-      throw new IllegalArgumentException("告警证据包 Payload 小于 76 字节固定 Header");
+      throw new IllegalArgumentException("告警抓拍图像包 Payload 小于 76 字节固定 Header");
     }
     if (Byte.toUnsignedInt(payload[1]) != headerLength
         || Byte.toUnsignedInt(payload[2]) != 1 || Byte.toUnsignedInt(payload[3]) != 1) {
-      throw new IllegalArgumentException("当前只支持 USTAR SNAPSHOT 证据包");
+      throw new IllegalArgumentException("当前只支持 USTAR SNAPSHOT 抓拍图像包");
     }
     ByteBuffer buffer = ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN);
     long eventId = buffer.getLong(4);
@@ -299,12 +299,12 @@ public final class VdmCodec {
         || chunkCount != expectedCount || chunkIndex >= chunkCount
         || chunkOffset != expectedOffset || chunkLength != expectedLength
         || payload.length != headerLength + chunkLength || flags != 0) {
-      throw new IllegalArgumentException("告警证据包身份、分块范围、长度或 flags 非法");
+      throw new IllegalArgumentException("告警抓拍图像包身份、分块范围、长度或 flags 非法");
     }
     byte[] chunk = Arrays.copyOfRange(payload, headerLength, payload.length);
     if (chunkIndex == 0 && (chunk.length < 262
         || !new String(chunk, 257, 5, java.nio.charset.StandardCharsets.US_ASCII).equals("ustar"))) {
-      throw new IllegalArgumentException("告警证据包首块缺少 USTAR 标识");
+      throw new IllegalArgumentException("告警抓拍图像包首块缺少 USTAR 标识");
     }
     return new EvidencePackageChunk(
         2, headerLength, Byte.toUnsignedInt(payload[2]), Byte.toUnsignedInt(payload[3]),

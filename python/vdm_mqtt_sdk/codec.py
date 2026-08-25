@@ -242,11 +242,11 @@ class VdmCodec:
     @staticmethod
     def decode_evidence_package_chunk(payload: bytes) -> EvidencePackageChunk:
         if len(payload) < EVIDENCE_PACKAGE_HEADER_LENGTH:
-            raise ValueError("告警证据包 Payload 小于 76 字节固定 Header")
+            raise ValueError("告警抓拍图像包 Payload 小于 76 字节固定 Header")
         if payload[0] != 2 or payload[1] != EVIDENCE_PACKAGE_HEADER_LENGTH:
-            raise ValueError("告警证据包 messageType/headerLen 非法")
+            raise ValueError("告警抓拍图像包 messageType/headerLen 非法")
         if payload[2] != 1 or payload[3] != 1:
-            raise ValueError("当前只支持 USTAR SNAPSHOT 证据包")
+            raise ValueError("当前只支持 USTAR SNAPSHOT 抓拍图像包")
 
         event_id = int.from_bytes(payload[4:12], "big")
         package_length = int.from_bytes(payload[12:20], "big")
@@ -257,9 +257,9 @@ class VdmCodec:
         flags = int.from_bytes(payload[72:76], "big")
 
         if event_id == 0:
-            raise ValueError("告警证据包 eventId 非法")
+            raise ValueError("告警抓拍图像包 eventId 非法")
         if package_length == 0 or package_length > MAX_EVIDENCE_PACKAGE_BYTES:
-            raise ValueError("告警证据包长度超出 1..32 MiB")
+            raise ValueError("告警抓拍图像包长度超出 1..32 MiB")
         expected_count = (package_length + EVIDENCE_CHUNK_BYTES - 1) // EVIDENCE_CHUNK_BYTES
         expected_offset = chunk_index * EVIDENCE_CHUNK_BYTES
         expected_length = min(EVIDENCE_CHUNK_BYTES, package_length - expected_offset)
@@ -271,10 +271,10 @@ class VdmCodec:
             or len(payload) != EVIDENCE_PACKAGE_HEADER_LENGTH + chunk_length
             or flags != 0
         ):
-            raise ValueError("告警证据包分块范围、长度或 flags 非法")
+            raise ValueError("告警抓拍图像包分块范围、长度或 flags 非法")
         chunk = bytes(payload[EVIDENCE_PACKAGE_HEADER_LENGTH:])
         if chunk_index == 0 and (len(chunk) < 262 or chunk[257:262] != b"ustar"):
-            raise ValueError("告警证据包首块缺少 USTAR 标识")
+            raise ValueError("告警抓拍图像包首块缺少 USTAR 标识")
         return EvidencePackageChunk(
             message_type=2,
             header_length=EVIDENCE_PACKAGE_HEADER_LENGTH,

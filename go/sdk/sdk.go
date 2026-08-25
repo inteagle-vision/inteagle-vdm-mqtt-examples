@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -169,10 +170,10 @@ func decodeImage(payload []byte) (any, error) {
 
 func decodeEvidencePackageChunk(payload []byte) (*EvidencePackageChunk, error) {
 	if len(payload) < evidencePackageHeaderLength {
-		return nil, errors.New("告警证据包 Payload 小于 76 字节固定 Header")
+		return nil, errors.New("告警抓拍图像包 Payload 小于 76 字节固定 Header")
 	}
 	if payload[0] != 2 || payload[1] != evidencePackageHeaderLength || payload[2] != 1 || payload[3] != 1 {
-		return nil, errors.New("当前只支持 USTAR SNAPSHOT 证据包")
+		return nil, errors.New("当前只支持 USTAR SNAPSHOT 抓拍图像包")
 	}
 	eventID := binary.BigEndian.Uint64(payload[4:12])
 	packageLength := binary.BigEndian.Uint64(payload[12:20])
@@ -182,21 +183,21 @@ func decodeEvidencePackageChunk(payload []byte) (*EvidencePackageChunk, error) {
 	chunkLength := binary.BigEndian.Uint32(payload[68:72])
 	flags := binary.BigEndian.Uint32(payload[72:76])
 	if eventID == 0 || packageLength == 0 || packageLength > maxEvidencePackageBytes {
-		return nil, errors.New("告警证据包身份或长度非法")
+		return nil, errors.New("告警抓拍图像包身份或长度非法")
 	}
 	expectedCount := uint32((packageLength + evidenceChunkBytes - 1) / evidenceChunkBytes)
 	expectedOffset := uint64(chunkIndex) * evidenceChunkBytes
 	if expectedOffset >= packageLength {
-		return nil, errors.New("告警证据包 chunkOffset 超出包长度")
+		return nil, errors.New("告警抓拍图像包 chunkOffset 超出包长度")
 	}
 	expectedLength := min(uint64(evidenceChunkBytes), packageLength-expectedOffset)
 	if chunkCount != expectedCount || chunkIndex >= chunkCount || chunkOffset != expectedOffset ||
 		uint64(chunkLength) != expectedLength || len(payload) != evidencePackageHeaderLength+int(chunkLength) || flags != 0 {
-		return nil, errors.New("告警证据包分块范围、长度或 flags 非法")
+		return nil, errors.New("告警抓拍图像包分块范围、长度或 flags 非法")
 	}
 	chunk := append([]byte(nil), payload[evidencePackageHeaderLength:]...)
 	if chunkIndex == 0 && (len(chunk) < 262 || string(chunk[257:262]) != "ustar") {
-		return nil, errors.New("告警证据包首块缺少 USTAR 标识")
+		return nil, errors.New("告警抓拍图像包首块缺少 USTAR 标识")
 	}
 	result := &EvidencePackageChunk{
 		MessageType: 2, HeaderLength: evidencePackageHeaderLength, PackageFormat: payload[2], EvidenceKind: payload[3],
@@ -524,6 +525,47 @@ func (c *Client) Call(ctx context.Context, method string, params any, reqID int3
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
+}
+
+func (c *Client) snapshotKind() string {
+	if c.config.PayloadFormat == Protobuf {
+		return "EVIDENCE_KIND_SNAPSHOT"
+	}
+	return "SNAPSHOT"
+}
+
+func (c *Client) GetEvidenceStatus(ctx context.Context, eventID uint64) (*DecodedPayload, error) {
+	if eventID == 0 {
+		return nil, errors.New("eventID 必须是非零整数")
+	}
+	return c.Call(ctx, "getEvidenceStatus", map[string]any{
+		"eventId": strconv.FormatUint(eventID, 10), "kind": c.snapshotKind(),
+	}, 0, false)
+}
+
+func (c *Client) RetryEvidence(ctx context.Context, eventID uint64) (*DecodedPayload, error) {
+	if eventID == 0 {
+		return nil, errors.New("eventID 必须是非零整数")
+	}
+	return c.Call(ctx, "retryEvidence", map[string]any{
+		"eventId": strconv.FormatUint(eventID, 10), "kind": c.snapshotKind(),
+	}, 0, false)
+}
+
+func (c *Client) AckEvidencePackage(ctx context.Context, eventID uint64, packageSHA256 string) (*DecodedPayload, error) {
+	if eventID == 0 {
+		return nil, errors.New("eventID 必须是非零整数")
+	}
+	if len(packageSHA256) != 64 || strings.ToLower(packageSHA256) != packageSHA256 {
+		return nil, errors.New("packageSHA256 必须是 64 个小写十六进制字符")
+	}
+	if _, err := hex.DecodeString(packageSHA256); err != nil {
+		return nil, errors.New("packageSHA256 必须是 64 个小写十六进制字符")
+	}
+	return c.Call(ctx, "ackEvidencePackage", map[string]any{
+		"eventId": strconv.FormatUint(eventID, 10), "kind": c.snapshotKind(),
+		"packageSha256": packageSHA256,
+	}, 0, false)
 }
 
 func responseInfo(value any) (int32, int32, string, string, error) {

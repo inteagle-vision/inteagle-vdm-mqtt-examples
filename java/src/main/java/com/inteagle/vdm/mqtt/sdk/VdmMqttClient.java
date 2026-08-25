@@ -167,6 +167,49 @@ public final class VdmMqttClient implements AutoCloseable, MqttCallbackExtended 
     return call(method, params, 0, timeout, false);
   }
 
+  public DecodedPayload getEvidenceStatus(long eventId, Duration timeout) throws Exception {
+    requireEventId(eventId);
+    return call(
+        "getEvidenceStatus",
+        Map.of("eventId", Long.toUnsignedString(eventId), "kind", snapshotKind()),
+        timeout);
+  }
+
+  public DecodedPayload retryEvidence(long eventId, Duration timeout) throws Exception {
+    requireEventId(eventId);
+    return call(
+        "retryEvidence",
+        Map.of("eventId", Long.toUnsignedString(eventId), "kind", snapshotKind()),
+        timeout);
+  }
+
+  public DecodedPayload ackEvidencePackage(
+      long eventId, String packageSha256, Duration timeout) throws Exception {
+    requireEventId(eventId);
+    if (packageSha256 == null || !packageSha256.matches("[0-9a-f]{64}")) {
+      throw new IllegalArgumentException("packageSha256 必须是 64 个小写十六进制字符");
+    }
+    return call(
+        "ackEvidencePackage",
+        Map.of(
+            "eventId", Long.toUnsignedString(eventId),
+            "kind", snapshotKind(),
+            "packageSha256", packageSha256),
+        timeout);
+  }
+
+  private String snapshotKind() {
+    return config.payloadFormat() == PayloadFormat.PROTOBUF
+        ? "EVIDENCE_KIND_SNAPSHOT"
+        : "SNAPSHOT";
+  }
+
+  private static void requireEventId(long eventId) {
+    if (eventId == 0) {
+      throw new IllegalArgumentException("eventId 必须是非零整数");
+    }
+  }
+
   private int nextReqId() {
     int value = reqIds.incrementAndGet();
     if (value == 0) {

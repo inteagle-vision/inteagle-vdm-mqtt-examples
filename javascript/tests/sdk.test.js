@@ -2,14 +2,76 @@
 
 const assert = require("node:assert/strict");
 const crypto = require("node:crypto");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const test = require("node:test");
 
 const {
+  AlarmSnapshotPackageAssembler,
   PUBLIC_RPC_FIELDS,
   VdmCodec,
   VdmMqttClient,
   VdmTopics,
 } = require("../sdk");
+
+const SNAPSHOT_CHUNK_BYTES = 128 * 1024;
+
+function writeTarOctal(header, offset, length, value) {
+  const encoded = Buffer.from(value.toString(8).padStart(length - 1, "0"), "ascii");
+  encoded.copy(header, offset);
+  header[offset + length - 1] = 0;
+}
+
+function tarEntry(name, data) {
+  const header = Buffer.alloc(512);
+  Buffer.from(name, "ascii").copy(header, 0);
+  writeTarOctal(header, 100, 8, 0o600);
+  writeTarOctal(header, 108, 8, 0);
+  writeTarOctal(header, 116, 8, 0);
+  writeTarOctal(header, 124, 12, data.length);
+  writeTarOctal(header, 136, 12, 0);
+  header.fill(0x20, 148, 156);
+  header[156] = 0x30;
+  Buffer.from("ustar\0", "ascii").copy(header, 257);
+  Buffer.from("00", "ascii").copy(header, 263);
+  let checksum = 0;
+  for (const value of header) checksum += value;
+  Buffer.from(checksum.toString(8).padStart(6, "0"), "ascii").copy(header, 148);
+  header[154] = 0;
+  header[155] = 0x20;
+  const padding = Buffer.alloc((512 - (data.length % 512)) % 512);
+  return Buffer.concat([header, data, padding]);
+}
+
+function snapshotUstar(imageName = "frame-000.jpg") {
+  const image = Buffer.alloc(140_004);
+  image.set([0xff, 0xd8], 0);
+  image.set([0xff, 0xd9], image.length - 2);
+  return Buffer.concat([
+    tarEntry("manifest.json", Buffer.from('{"eventId":"9001"}')),
+    tarEntry(imageName, image),
+    Buffer.alloc(1024),
+  ]);
+}
+
+function snapshotChunk(packageBytes, eventId, chunkIndex) {
+  const chunkCount = Math.ceil(packageBytes.length / SNAPSHOT_CHUNK_BYTES);
+  const chunkOffset = chunkIndex * SNAPSHOT_CHUNK_BYTES;
+  return {
+    messageType: 2,
+    headerLength: 76,
+    packageFormat: 1,
+    evidenceKind: 1,
+    eventId: String(eventId),
+    packageLength: String(packageBytes.length),
+    packageSha256: crypto.createHash("sha256").update(packageBytes).digest("hex"),
+    chunkIndex,
+    chunkCount,
+    chunkOffset: String(chunkOffset),
+    chunk: packageBytes.subarray(chunkOffset, Math.min(chunkOffset + SNAPSHOT_CHUNK_BYTES, packageBytes.length)),
+  };
+}
 
 test("Topic 映射并拒绝通配符", () => {
   const topics = VdmTopics.forDevice("DEMO001");
@@ -100,7 +162,7 @@ test("解析图片 Header 并保留 JPEG", () => {
   assert.deepEqual(image.jpeg, Buffer.from([0xff, 0xd8, 0xff, 0xd9]));
 });
 
-test("严格解析类型 2 告警证据包分块", () => {
+test("严格解析类型 2 告警抓拍图像包分块", () => {
   const packageBytes = Buffer.alloc(512);
   packageBytes.write("ustar", 257, "ascii");
   const payload = Buffer.alloc(76 + packageBytes.length);
@@ -119,6 +181,67 @@ test("严格解析类型 2 告警证据包分块", () => {
   assert.equal(chunk.eventId, "9001");
   assert.equal(chunk.packageLength, "512");
   assert.deepEqual(chunk.chunk, packageBytes);
+});
+
+test("告警抓拍图像包乱序落盘、重复幂等并生成回执", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "vdm-js-snapshot-"));
+  try {
+    const packageBytes = snapshotUstar();
+    const assembler = new AlarmSnapshotPackageAssembler(directory, { maxPendingEvents: 2 });
+    const second = snapshotChunk(packageBytes, "9001", 1);
+    assert.equal(assembler.accept(second), null);
+    assert.equal(assembler.accept(second), null);
+    const completed = assembler.accept(snapshotChunk(packageBytes, "9001", 0));
+    assert.ok(completed);
+    assert.deepEqual(fs.readFileSync(completed.packagePath), packageBytes);
+    assert.ok(fs.statSync(path.join(path.dirname(completed.packagePath), "receipt.json")).isFile());
+    assert.ok(assembler.accept(second));
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("告警抓拍图像包拒绝冲突、不安全 USTAR 和超额待处理事件", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "vdm-js-snapshot-invalid-"));
+  try {
+    const packageBytes = snapshotUstar();
+    const assembler = new AlarmSnapshotPackageAssembler(path.join(directory, "conflict"), { maxPendingEvents: 1 });
+    const first = snapshotChunk(packageBytes, "9002", 0);
+    assert.equal(assembler.accept(first), null);
+    const conflict = { ...first, chunk: Buffer.from(first.chunk) };
+    conflict.chunk[0] ^= 0xff;
+    assert.throws(() => assembler.accept(conflict), /冲突/);
+    assert.throws(() => assembler.accept(snapshotChunk(packageBytes, "9003", 0)), /有界限制/);
+
+    const unsafePackage = snapshotUstar("../outside.jpg");
+    const unsafeAssembler = new AlarmSnapshotPackageAssembler(path.join(directory, "unsafe"));
+    assert.equal(unsafeAssembler.accept(snapshotChunk(unsafePackage, "9004", 0)), null);
+    assert.throws(() => unsafeAssembler.accept(snapshotChunk(unsafePackage, "9004", 1)), /不安全/);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("抓拍图像 RPC 便捷方法使用稳定协议方法名", async () => {
+  const client = new VdmMqttClient({
+    host: "127.0.0.1",
+    port: 1883,
+    topics: VdmTopics.forDevice("DEMO001"),
+    payloadFormat: "protobuf",
+  });
+  const calls = [];
+  client.call = async (method, params, options) => {
+    calls.push({ method, params, options });
+    return { method, params };
+  };
+  await client.getEvidenceStatus(9001n);
+  await client.retryEvidence("9001");
+  await client.ackEvidencePackage("9001", "a".repeat(64));
+  assert.deepEqual(calls.map((entry) => entry.method), [
+    "getEvidenceStatus", "retryEvidence", "ackEvidencePackage",
+  ]);
+  assert.ok(calls.every((entry) => entry.params.kind === "EVIDENCE_KIND_SNAPSHOT"));
+  assert.throws(() => client.ackEvidencePackage("9001", "BAD"), /小写十六进制/);
 });
 
 test("不同云客户端实例不共享 RPC pending 表", () => {

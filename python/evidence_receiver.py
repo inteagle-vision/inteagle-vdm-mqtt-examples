@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""接收、校验并确认 StdMqtt 告警抓拍证据。"""
+"""接收、校验并确认 StdMqtt 告警抓拍图像。"""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import threading
 import time
 
 from vdm_mqtt_sdk import (
-    EvidencePackageAssembler,
+    AlarmSnapshotPackageAssembler,
     EvidencePackageChunk,
     VdmMqttClient,
     VdmMqttClientConfig,
@@ -20,7 +20,7 @@ def setting(name: str, default: str) -> str:
     return os.getenv(name, default)
 
 
-assembler = EvidencePackageAssembler(setting("VDM_EVIDENCE_DIR", "./evidence"))
+assembler = AlarmSnapshotPackageAssembler(setting("VDM_EVIDENCE_DIR", "./evidence"))
 client: VdmMqttClient
 
 

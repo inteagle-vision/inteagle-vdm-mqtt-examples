@@ -64,6 +64,17 @@ export interface EvidencePackageChunk {
   chunk: Uint8Array;
 }
 
+export interface CompletedAlarmSnapshotPackage {
+  eventId: string;
+  packageSha256: string;
+  packagePath: string;
+}
+
+export class AlarmSnapshotPackageAssembler {
+  constructor(outputDirectory: string, options?: { maxPendingEvents?: number });
+  accept(chunk: EvidencePackageChunk): CompletedAlarmSnapshotPackage | null;
+}
+
 export interface DecodedPayload {
   topic: string;
   suffix: string;
@@ -122,6 +133,19 @@ export class VdmMqttClient {
   call(
     method: PublicRpcMethod,
     params?: Record<string, unknown>,
+    options?: { reqId?: number; timeoutMs?: number; allowError?: boolean },
+  ): Promise<DecodedPayload>;
+  getEvidenceStatus(
+    eventId: string | bigint,
+    options?: { reqId?: number; timeoutMs?: number; allowError?: boolean },
+  ): Promise<DecodedPayload>;
+  retryEvidence(
+    eventId: string | bigint,
+    options?: { reqId?: number; timeoutMs?: number; allowError?: boolean },
+  ): Promise<DecodedPayload>;
+  ackEvidencePackage(
+    eventId: string | bigint,
+    packageSha256: string,
     options?: { reqId?: number; timeoutMs?: number; allowError?: boolean },
   ): Promise<DecodedPayload>;
 }

@@ -6,11 +6,12 @@ import io
 import tarfile
 import tempfile
 import unittest
+from dataclasses import replace
 
 import inteagle_vdm_mqtt_v1_pb2 as pb
 
 from vdm_mqtt_sdk import (
-    EvidencePackageAssembler,
+    AlarmSnapshotPackageAssembler,
     EvidencePackageChunk,
     ImageFrame,
     PayloadFormat,
@@ -127,12 +128,14 @@ class VdmCodecTests(unittest.TestCase):
         )
 
     @staticmethod
-    def _evidence_package(padding: int = 0) -> bytes:
+    def _evidence_package(
+        padding: int = 0, image_name: str = "frame-000.jpg"
+    ) -> bytes:
         output = io.BytesIO()
         with tarfile.open(fileobj=output, mode="w", format=tarfile.USTAR_FORMAT) as archive:
             for name, data in (
                 ("manifest.json", b'{"eventId":"9001"}'),
-                ("frame-000.jpg", b"\xff\xd8evidence\xff\xd9" + b"x" * padding),
+                (image_name, b"\xff\xd8snapshot\xff\xd9" + b"x" * padding),
             ):
                 info = tarfile.TarInfo(name)
                 info.size = len(data)
@@ -178,7 +181,7 @@ class VdmCodecTests(unittest.TestCase):
         self.assertEqual(chunk.event_id, 9001)
         self.assertEqual(chunk.package_sha256, hashlib.sha256(package).digest())
         with tempfile.TemporaryDirectory() as directory:
-            completed = EvidencePackageAssembler(directory).accept(chunk)
+            completed = AlarmSnapshotPackageAssembler(directory).accept(chunk)
             self.assertIsNotNone(completed)
             self.assertEqual(completed.event_id, 9001)
             self.assertEqual(completed.package_path.read_bytes(), package)
@@ -191,13 +194,38 @@ class VdmCodecTests(unittest.TestCase):
     def test_package_chunk_duplicate_is_idempotent_while_pending(self) -> None:
         package = self._evidence_package(140_000)
         with tempfile.TemporaryDirectory() as directory:
-            assembler = EvidencePackageAssembler(directory)
+            assembler = AlarmSnapshotPackageAssembler(directory)
             first = self._package_chunk(package, 9002, 0)
             self.assertIsNone(assembler.accept(first))
             self.assertIsNone(assembler.accept(first))
             completed = assembler.accept(self._package_chunk(package, 9002, 1))
             self.assertIsNotNone(completed)
             self.assertEqual(completed.package_path.read_bytes(), package)
+            repeated = assembler.accept(first)
+            self.assertIsNotNone(repeated)
+            self.assertEqual(repeated.package_sha256, completed.package_sha256)
+
+    def test_package_assembler_rejects_conflict_unsafe_tar_and_pending_overflow(self) -> None:
+        package = self._evidence_package(140_000)
+        with tempfile.TemporaryDirectory() as directory:
+            assembler = AlarmSnapshotPackageAssembler(directory, max_pending_events=1)
+            first = self._package_chunk(package, 9101, 0)
+            self.assertIsNone(assembler.accept(first))
+            conflict = replace(
+                first,
+                chunk=bytes((first.chunk[0] ^ 0xFF,)) + first.chunk[1:],
+            )
+            with self.assertRaises(ValueError):
+                assembler.accept(conflict)
+            with self.assertRaises(RuntimeError):
+                assembler.accept(self._package_chunk(package, 9102, 0))
+
+        unsafe = self._evidence_package(140_000, "../outside.jpg")
+        with tempfile.TemporaryDirectory() as directory:
+            assembler = AlarmSnapshotPackageAssembler(directory)
+            self.assertIsNone(assembler.accept(self._package_chunk(unsafe, 9201, 0)))
+            with self.assertRaises(ValueError):
+                assembler.accept(self._package_chunk(unsafe, 9201, 1))
 
 
 if __name__ == "__main__":

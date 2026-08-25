@@ -206,6 +206,8 @@ class VdmMqttClient:
                     self._pending.pop(req_id, None)
 
     def get_evidence_status(self, event_id: int, *, timeout: float = 10.0) -> DecodedPayload:
+        if event_id <= 0:
+            raise ValueError("event_id 必须是非零整数")
         kind = (
             "EVIDENCE_KIND_SNAPSHOT"
             if self.config.payload_format is PayloadFormat.PROTOBUF
@@ -218,6 +220,8 @@ class VdmMqttClient:
         )
 
     def retry_evidence(self, event_id: int, *, timeout: float = 10.0) -> DecodedPayload:
+        if event_id <= 0:
+            raise ValueError("event_id 必须是非零整数")
         kind = (
             "EVIDENCE_KIND_SNAPSHOT"
             if self.config.payload_format is PayloadFormat.PROTOBUF
@@ -236,6 +240,8 @@ class VdmMqttClient:
         *,
         timeout: float = 10.0,
     ) -> DecodedPayload:
+        if event_id <= 0:
+            raise ValueError("event_id 必须是非零整数")
         if len(package_sha256) != 64 or any(
             value not in "0123456789abcdef" for value in package_sha256
         ):

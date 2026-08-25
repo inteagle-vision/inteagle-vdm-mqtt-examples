@@ -3,11 +3,11 @@
 本仓库提供 VDM 设备 MQTT 数据的 Python、Go、Java、JavaScript SDK 源码、完整解析示例和
 NanoMQ 自动测试。四种语言使用同一份
 [`proto/inteagle_vdm_mqtt_v1.proto`](proto/inteagle_vdm_mqtt_v1.proto)，可直接得到
-遥测、设备属性、事件、告警、证据状态、RPC 和图片/证据分块的消息对象及可读字段。
+遥测、设备属性、事件、告警、RPC、普通图片和告警抓拍图像包的消息对象及可读字段。
 
 设备连接建立时需要明确选择 `JSON` 或 `Protobuf` Payload 格式。云端应按照所选格式
 解析，不应根据 Payload 字节自动猜测格式。`image` Topic 始终使用二进制结构：类型 `1`
-是普通图片，类型 `2` 是 76 字节固定 Header + 最大 128 KiB USTAR 证据包分块；
+是普通图片，类型 `2` 是 76 字节固定 Header + 最大 128 KiB USTAR 告警抓拍图像包分块；
 二者均不使用 JSON 或 Protobuf 包装。
 
 <a id="quick-test"></a>
@@ -48,11 +48,10 @@ NanoMQ 自动测试。四种语言使用同一份
 ```text
 topic=telemetry data={"schemaVersion":1,"displacement":{"sampleFrequencyHz":20,"targets":[{"targetId":"T01","dxMm":[0.125,0.25,0.375],"dyMm":[-0.5,-0.625,-0.75]}],"firstSampleTimestampMs":"1721805600000"}}
 topic=3A data={"schemaVersion":1,"eventId":"9001","alarmId":"701","alarmType":"ALARM_TYPE_DISPLACEMENT_LIMIT","level":"ALARM_LEVEL_ALERT","transition":"ALARM_TRANSITION_TRIGGERED","displacement":{"targetId":"T01","valueMm":3.5,"limitMm":3.0}}
-topic=event data={"schemaVersion":1,"timestampS":"1721805600","eventType":"EVENT_TYPE_ALARM_EVIDENCE","alarmEvidence":{"eventId":"9001","kind":"EVIDENCE_KIND_SNAPSHOT","state":"EVIDENCE_STATE_READY"}}
 topic=image data={"messageType":2,"headerLength":76,"packageFormat":1,"evidenceKind":1,"eventId":"9001","packageLength":"10240","chunkIndex":0,"chunkCount":1}
 ```
 
-当前 8 条示例消息同时验证 JSON/Protobuf 业务消息和二进制证据分块。
+示例消息同时验证 JSON/Protobuf 业务消息和二进制告警抓拍图像包分块。
 发布器会输出每条消息的实际 `bytes`，可用实际标靶数和采样频率重新评估流量。
 
 可通过环境变量修改宿主机映射端口：
@@ -84,8 +83,8 @@ NANOMQ_BIND_ADDRESS=0.0.0.0 NANOMQ_PORT=18883 docker compose up nanomq
 | `vdm/DEMO001/image` | 非 Protobuf | 设备到云端 |
 
 四个订阅端都根据 Topic 选择明确的 Protobuf 根消息。带 `schema_version`
-的消息必须等于 `1`；证据状态使用 `Event.alarm_evidence`，不另设 Topic。SDK 覆盖
-29 个强类型 Protobuf RPC，包括告警管理、证据查询、重试和应用确认。
+的消息必须等于 `1`。SDK 覆盖 29 个强类型 Protobuf RPC，包括告警管理、
+抓拍图像查询、重试和应用确认。
 
 JSON Event 固定为 `{"type":"...","ts":<Unix秒>,"detail":{...}}`，
 不接受旧的 `event/data` 别名。首发契约只有
@@ -99,9 +98,9 @@ JSON Event 固定为 `{"type":"...","ts":<Unix秒>,"detail":{...}}`，
 
 - 按连接配置解析 JSON 或 Protobuf，不猜测 Payload 格式。
 - 返回语言对应的 Protobuf 消息对象，同时提供 JSON 兼容字段视图。
-- 解析位移/环境量遥测、设备属性、事件、告警、证据状态、RPC 以及两类图片 Header。
+- 解析位移/环境量遥测、设备属性、事件、告警、RPC 以及两类图片 Header。
 - 从字典/Map 构造 29 个强类型 Protobuf RPC；JSON 与 Protobuf 均支持 5 个告警管理 RPC。
-- Python 示例提供磁盘优先的有界分块重组、USTAR/SHA-256 校验和 `ackEvidencePackage`。
+- 四种语言均提供磁盘优先的有界分块重组、USTAR/长度/SHA-256/成员安全校验、原子接收回执，以及 `getEvidenceStatus`、`retryEvidence`、`ackEvidencePackage` 便捷调用。
 - 自动维护并发 RPC 的 `req_id`、超时和错误码，断线重连后自动重新订阅。
 - 四种语言都只以 `code == 0` 判断成功；`1` 是通用失败，其他非零码是可直接处理的细分错误。
 - RPC 在线 Payload 不携带重复的 `msg/message` 文本；SDK 在本地按数字错误码生成可读说明。
@@ -217,29 +216,38 @@ const response = await client.call(
 
 <a id="alarm-evidence"></a>
 
-## 告警与抓拍证据对接
+## 告警与抓拍图像对接
 
 0.8.5 中，`alarmId` 表示一次完整告警生命周期，`eventId` 表示其中一次
 状态变化。`RECOVERED` 或 `CANCELLED` 表示该 `alarmId` 的生命周期结束。
-抓拍证据使用触发它的 `eventId`，因此客户平台的关联键为：
+告警抓拍图像使用触发它的 `eventId`，因此客户平台的关联键为：
 
 ```text
-deviceId + alarm.eventId == deviceId + event.detail.eventId == imageHeader.eventId
+deviceId + alarm.eventId == deviceId + imageHeader.eventId
 ```
 
 建议平台保存 `deviceId + alarmId` 作为生命周期主键，并将 `eventId`
-作为状态变化和证据去重键。不要从 ID 位布局互相推导。
+作为状态变化和抓拍图像去重键。不要从 ID 位布局互相推导。
 
-StdMqtt 客户证据的流程为：
+StdMqtt 告警抓拍图像的流程为：
 
-1. 接收 `3A` 告警和 `event` 中的 `ALARM_EVIDENCE` 状态，两者可能乱序或重复。
-2. 在现有 `image` Topic 接收 `messageType=2` 的 128 KiB 分块。
-3. 按 `deviceId + eventId + packageSha256 + chunkIndex` 幂等落盘，校验分块范围、证据包长度和 SHA-256。
-4. 完整 USTAR 包持久化且验证 `manifest.json` 后，从同一 StdMqtt 连接调用 `ackEvidencePackage`。
-5. 设备收到匹配的应用确认后上报 `SYNCED`；`eventId` 始终是告警与证据包的关联键。
+1. 接收 `3A` 告警，并在现有 `image` Topic 接收 `messageType=2` 的 128 KiB 图像包分块；两者可能乱序或重复。
+2. 按 `deviceId + eventId + packageSha256 + chunkIndex` 幂等落盘，校验分块范围、图像包长度和 SHA-256。
+3. 完整 USTAR 图像包持久化且验证 `manifest.json` 后，从同一 StdMqtt 连接调用 `ackEvidencePackage`。
 
-设备只启用一个 StdMqtt 连接时，0.8.5 默认选择该连接发送证据图片；若同时启用多个
-StdMqtt，设备管理员必须明确选择一个客户证据目的地，固件不会猜测。客户平台无需接触
+四种语言使用同一接收边界：
+
+| SDK | 分块重组器 |
+| --- | --- |
+| Python | `AlarmSnapshotPackageAssembler` |
+| Go | `NewAlarmSnapshotPackageAssembler(...)` |
+| Java | `AlarmSnapshotPackageAssembler` |
+| JavaScript / TypeScript | `AlarmSnapshotPackageAssembler` |
+
+重组器只有在图像包和 `receipt.json` 均持久化且校验通过后才返回完成结果；调用方随后从接收分块的同一 MQTT 客户端执行 ACK。
+
+设备只启用一个 StdMqtt 连接时，0.8.5 默认选择该连接发送告警抓拍图像；若同时启用多个
+StdMqtt，设备管理员必须明确选择一个抓拍图像目的地，固件不会猜测。客户平台无需接触
 Inteagle OSS/STS 配置。
 
 Python 参考接收器：
@@ -269,7 +277,7 @@ const incident = await client.call("listAlarmHistory", { alarmId: "9754138318563
 ```
 
 精确按 `alarmId` 查询 `listAlarmHistory` 时，设备会在该生命周期记录中
-附加当前可见的证据摘要。Protobuf V1 已为
+附加当前可见的抓拍图像摘要。Protobuf V1 已为
 `getAlarmCaps` / `listAlarmRules` / `applyAlarmRules` / `getAlarmState` /
 `listAlarmHistory` 提供强类型 oneof。
 
@@ -288,16 +296,17 @@ const incident = await client.call("listAlarmHistory", { alarmId: "9754138318563
 │   ├── vdm_mqtt_sdk/                    # Python SDK
 │   ├── tests/                           # Python SDK 单元测试
 │   ├── consumer.py                      # Python SDK 使用示例
-│   ├── evidence_receiver.py             # 证据分块落盘、校验与 ACK 示例
+│   ├── evidence_receiver.py             # 抓拍图像包分块落盘、校验与 ACK 示例
 │   └── publisher.py                     # JSON/Protobuf 测试数据发布
 ├── go/
-│   ├── sdk/                             # Go SDK 与测试
+│   ├── sdk/                             # Go SDK、图像包重组器与测试
 │   └── cmd/consumer/main.go             # Go SDK 使用示例
 ├── java/src/
-    ├── main/java/.../mqtt/sdk/           # Java SDK
+    ├── main/java/.../mqtt/sdk/           # Java SDK 与图像包重组器
     ├── main/java/.../Consumer.java       # Java SDK 使用示例
     └── test/java/.../VdmCodecTest.java   # Java SDK 单元测试
 └── javascript/
+    ├── sdk/snapshot-package.js           # JavaScript 图像包重组器
     ├── sdk/                              # JavaScript SDK 与 TypeScript 类型
     ├── tests/                            # Node.js SDK 单元测试
     └── consumer.js                       # JavaScript SDK 使用示例
