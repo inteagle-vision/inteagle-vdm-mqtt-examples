@@ -9,7 +9,6 @@ import com.google.protobuf.DynamicMessage;
 import com.google.protobuf.Message;
 import com.google.protobuf.util.JsonFormat;
 import com.inteagle.vdm.mqtt.v1.Alarm;
-import com.inteagle.vdm.mqtt.v1.AlarmEvidence;
 import com.inteagle.vdm.mqtt.v1.Attributes;
 import com.inteagle.vdm.mqtt.v1.Event;
 import com.inteagle.vdm.mqtt.v1.RpcRequest;
@@ -48,7 +47,7 @@ public final class VdmCodec {
       Map.entry("getCruisePaths", "get_cruise_paths"),
       Map.entry("getEvidenceStatus", "get_evidence_status"),
       Map.entry("retryEvidence", "retry_evidence"),
-      Map.entry("ackEvidenceImages", "ack_evidence_images"),
+      Map.entry("ackEvidencePackage", "ack_evidence_package"),
       Map.entry("getAlarmCaps", "get_alarm_caps"),
       Map.entry("listAlarmRules", "list_alarm_rules"),
       Map.entry("applyAlarmRules", "apply_alarm_rules"),
@@ -114,19 +113,14 @@ public final class VdmCodec {
     if (suffix.equals("image")) {
       value = decodeImage(payload);
       ObjectNode node = objectMapper.createObjectNode();
-      if (value instanceof EvidenceImageChunk chunk) {
+      if (value instanceof EvidencePackageChunk chunk) {
         node.put("messageType", chunk.messageType());
         node.put("headerLength", chunk.headerLength());
-        node.put("cameraId", chunk.cameraId());
-        node.put("triggerType", chunk.triggerType());
-        node.put("capturedAtMs", Long.toUnsignedString(chunk.capturedAtMs()));
+        node.put("packageFormat", chunk.packageFormat());
+        node.put("evidenceKind", chunk.evidenceKind());
         node.put("eventId", Long.toUnsignedString(chunk.eventId()));
-        node.put("imageIndex", chunk.imageIndex());
-        node.put("imageCount", chunk.imageCount());
-        node.put("actualOffsetMs", chunk.actualOffsetMs());
-        node.put("jpegLength", chunk.jpegLength());
-        node.put("jpegSha256", java.util.HexFormat.of().formatHex(chunk.jpegSha256()));
-        node.put("manifestSha256", java.util.HexFormat.of().formatHex(chunk.manifestSha256()));
+        node.put("packageLength", Long.toUnsignedString(chunk.packageLength()));
+        node.put("packageSha256", java.util.HexFormat.of().formatHex(chunk.packageSha256()));
         node.put("chunkIndex", chunk.chunkIndex());
         node.put("chunkCount", chunk.chunkCount());
         node.put("chunkOffset", chunk.chunkOffset());
@@ -149,11 +143,9 @@ public final class VdmCodec {
       value = data;
     } else {
       Message message = parseProtobuf(suffix, payload);
-      if (!(message instanceof AlarmEvidence)) {
-        int version = schemaVersion(message);
-        if (version != SCHEMA_VERSION) {
-          throw new IllegalArgumentException("不支持 schema_version=" + version);
-        }
+      int version = schemaVersion(message);
+      if (version != SCHEMA_VERSION) {
+        throw new IllegalArgumentException("不支持 schema_version=" + version);
       }
       value = message;
       data = objectMapper.readTree(JsonFormat.printer().print(message));
@@ -237,7 +229,6 @@ public final class VdmCodec {
       case "attributes" -> Attributes.parseFrom(payload);
       case "event" -> Event.parseFrom(payload);
       case "3A" -> Alarm.parseFrom(payload);
-      case "evidence" -> AlarmEvidence.parseFrom(payload);
       case "rpc/req" -> RpcRequest.parseFrom(payload);
       case "rpc/resp" -> RpcResponse.parseFrom(payload);
       default -> throw new IllegalArgumentException("未支持的 Topic: " + suffix);
@@ -258,7 +249,7 @@ public final class VdmCodec {
 
   private static Object decodeImage(byte[] payload) {
     if (payload.length > 0 && Byte.toUnsignedInt(payload[0]) == 2) {
-      return decodeEvidenceImageChunk(payload);
+      return decodeEvidencePackageChunk(payload);
     }
     if (payload.length < 10) {
       throw new IllegalArgumentException("图片 Payload 小于 VDM Header 与 JPEG 最小长度");
@@ -283,45 +274,41 @@ public final class VdmCodec {
         Arrays.copyOfRange(payload, headerLength, payload.length));
   }
 
-  private static EvidenceImageChunk decodeEvidenceImageChunk(byte[] payload) {
-    final int headerLength = 112;
+  private static EvidencePackageChunk decodeEvidencePackageChunk(byte[] payload) {
+    final int headerLength = 76;
     final int chunkBytes = 128 * 1024;
     if (payload.length < headerLength) {
-      throw new IllegalArgumentException("告警证据图片 Payload 小于 112 字节固定 Header");
+      throw new IllegalArgumentException("告警证据包 Payload 小于 76 字节固定 Header");
     }
-    if (Byte.toUnsignedInt(payload[1]) != headerLength || Byte.toUnsignedInt(payload[3]) != 1) {
-      throw new IllegalArgumentException("告警证据图片 headerLen/triggerType 非法");
+    if (Byte.toUnsignedInt(payload[1]) != headerLength
+        || Byte.toUnsignedInt(payload[2]) != 1 || Byte.toUnsignedInt(payload[3]) != 1) {
+      throw new IllegalArgumentException("当前只支持 USTAR SNAPSHOT 证据包");
     }
     ByteBuffer buffer = ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN);
-    long capturedAtMs = buffer.getLong(4);
-    long eventId = buffer.getLong(12);
-    int imageIndex = Short.toUnsignedInt(buffer.getShort(20));
-    int imageCount = Short.toUnsignedInt(buffer.getShort(22));
-    long jpegLength = Integer.toUnsignedLong(buffer.getInt(28));
-    int chunkIndex = Short.toUnsignedInt(buffer.getShort(96));
-    int chunkCount = Short.toUnsignedInt(buffer.getShort(98));
-    long chunkOffset = Integer.toUnsignedLong(buffer.getInt(100));
-    long chunkLength = Integer.toUnsignedLong(buffer.getInt(104));
-    long flags = Integer.toUnsignedLong(buffer.getInt(108));
-    long expectedCount = (jpegLength + chunkBytes - 1) / chunkBytes;
-    long expectedOffset = (long) chunkIndex * chunkBytes;
-    long expectedLength = Math.min(chunkBytes, jpegLength - expectedOffset);
-    if (capturedAtMs == 0 || eventId == 0 || imageCount < 1 || imageCount > 64
-        || imageIndex >= imageCount || jpegLength < 1 || jpegLength > 2L * 1024 * 1024
+    long eventId = buffer.getLong(4);
+    long packageLength = buffer.getLong(12);
+    long chunkIndex = Integer.toUnsignedLong(buffer.getInt(52));
+    long chunkCount = Integer.toUnsignedLong(buffer.getInt(56));
+    long chunkOffset = buffer.getLong(60);
+    long chunkLength = Integer.toUnsignedLong(buffer.getInt(68));
+    long flags = Integer.toUnsignedLong(buffer.getInt(72));
+    long expectedCount = (packageLength + chunkBytes - 1) / chunkBytes;
+    long expectedOffset = chunkIndex * chunkBytes;
+    long expectedLength = Math.min(chunkBytes, packageLength - expectedOffset);
+    if (eventId == 0 || packageLength < 1 || packageLength > 32L * 1024 * 1024
         || chunkCount != expectedCount || chunkIndex >= chunkCount
         || chunkOffset != expectedOffset || chunkLength != expectedLength
         || payload.length != headerLength + chunkLength || flags != 0) {
-      throw new IllegalArgumentException("告警证据图片身份、索引、分块范围、长度或 flags 非法");
+      throw new IllegalArgumentException("告警证据包身份、分块范围、长度或 flags 非法");
     }
     byte[] chunk = Arrays.copyOfRange(payload, headerLength, payload.length);
-    if (chunkIndex == 0 && (chunk.length < 2
-        || Byte.toUnsignedInt(chunk[0]) != 0xff || Byte.toUnsignedInt(chunk[1]) != 0xd8)) {
-      throw new IllegalArgumentException("告警证据 JPEG 首块缺少 SOI");
+    if (chunkIndex == 0 && (chunk.length < 262
+        || !new String(chunk, 257, 5, java.nio.charset.StandardCharsets.US_ASCII).equals("ustar"))) {
+      throw new IllegalArgumentException("告警证据包首块缺少 USTAR 标识");
     }
-    return new EvidenceImageChunk(
+    return new EvidencePackageChunk(
         2, headerLength, Byte.toUnsignedInt(payload[2]), Byte.toUnsignedInt(payload[3]),
-        capturedAtMs, eventId, imageIndex, imageCount, buffer.getInt(24), jpegLength,
-        Arrays.copyOfRange(payload, 32, 64), Arrays.copyOfRange(payload, 64, 96),
+        eventId, packageLength, Arrays.copyOfRange(payload, 20, 52),
         chunkIndex, chunkCount, chunkOffset, chunk);
   }
 }

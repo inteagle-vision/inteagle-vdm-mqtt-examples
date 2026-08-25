@@ -25,10 +25,9 @@ option go_package = "github.com/inteagle-vision/inteagle-vdm-mqtt-examples/go/ge
 //   vdm/{deviceId}/attributes -> Attributes      设备到云端
 //   vdm/{deviceId}/event      -> Event           设备到云端
 //   vdm/{deviceId}/3A         -> Alarm           设备到云端
-//   vdm/{deviceId}/evidence   -> AlarmEvidence   设备到云端
 //   vdm/{deviceId}/rpc/req    -> RpcRequest              云端到设备
 //   vdm/{deviceId}/rpc/resp   -> RpcResponse             设备到云端
-//   vdm/{deviceId}/image      -> 不使用 Protobuf：VDM 图片 Header + JPEG bytes
+//   vdm/{deviceId}/image      -> 不使用 Protobuf：类型 1 普通 JPEG / 类型 2 证据 USTAR 分块
 //
 // 时间戳约定：
 //
@@ -208,16 +207,12 @@ message DynamicObject {
 }
 
 enum EventType {
-  reserved 9 to 11;
+  reserved 4 to 8, 10 to 11;
   EVENT_TYPE_UNSPECIFIED = 0;
-  EVENT_TYPE_INIT_REFERENCE_TARGET = 1;
-  EVENT_TYPE_CRUISE_POINT_REACHED = 2;
-  EVENT_TYPE_TARGET_LOST = 3;
-  EVENT_TYPE_TARGET_TRACKING_STATUS_CHANGED = 4;
-  EVENT_TYPE_LOW_BATTERY = 5;
-  EVENT_TYPE_SENSOR_FAILURE = 6;
-  EVENT_TYPE_CALIBRATION_ERROR = 7;
-  EVENT_TYPE_CALIBRATION_REQUIRED = 8;
+  EVENT_TYPE_REF_INIT_RESULT = 1;
+  EVENT_TYPE_CRUISE_REACHED = 2;
+  EVENT_TYPE_TARGET_TRACKING = 3;
+  EVENT_TYPE_ALARM_EVIDENCE = 9;
 }
 
 message TargetInitializationFailure {
@@ -227,21 +222,36 @@ message TargetInitializationFailure {
   string message = 3 [deprecated = true];
 }
 
-message InitReferenceTargetEvent {
+message RefInitResultEvent {
   repeated string successful_target_ids = 1;
   repeated TargetInitializationFailure failed_targets = 2;
 }
 
-message CruisePointReachedEvent {
+message CruiseReachedEvent {
   optional uint32 path_id = 1;
   optional uint32 point_id = 2;
   optional float pan_degrees = 3;
   optional float tilt_degrees = 4;
 }
 
-message TargetEvent {
+enum TargetTrackingState {
+  TARGET_TRACKING_STATE_UNSPECIFIED = 0;
+  TARGET_TRACKING_STATE_LOST = 1;
+  TARGET_TRACKING_STATE_TRACKING = 2;
+}
+
+message TargetTrackingEvent {
   string target_id = 1;
-  optional string status = 2; // 状态值允许扩展，具体取值以事件文档为准。
+  TargetTrackingState state = 2;
+}
+
+message AlarmEvidenceEventDetail {
+  uint64 event_id = 1;
+  EvidenceKind kind = 2;
+  EvidenceState state = 3;
+  optional string evidence_id = 5;
+  optional bool partial = 6;
+  optional EvidenceFailureReason reason = 7;
 }
 
 // event_type 必须与 detail oneof 中的字段一致。未定义稳定客户契约的设备内部
@@ -253,9 +263,10 @@ message Event {
   uint64 timestamp_s = 2;
   EventType event_type = 3;
   oneof detail {
-    InitReferenceTargetEvent init_reference_target = 10;
-    CruisePointReachedEvent cruise_point_reached = 11;
-    TargetEvent target = 12;
+    RefInitResultEvent ref_init_result = 10;
+    CruiseReachedEvent cruise_reached = 11;
+    TargetTrackingEvent target_tracking = 12;
+    AlarmEvidenceEventDetail alarm_evidence = 13;
   }
 }
 
@@ -368,8 +379,9 @@ enum EvidenceFailureReason {
   EVIDENCE_FAILURE_REASON_QUOTA_EVICTED = 5;
 }
 
-// Small state notification only. Image bytes, object keys, upload URLs and
-// authorization data never cross MQTT in this message.
+// Standalone state object used by evidence RPC responses and the provider-
+// specific HS evidence topic. Event.alarm_evidence uses the timestamp-free
+// AlarmEvidenceEventDetail because Event.timestamp_s is authoritative.
 message AlarmEvidence {
   uint64 event_id = 1;
   EvidenceKind kind = 2;
@@ -514,12 +526,12 @@ message EvidenceQueryRequest {
   optional EvidenceKind kind = 2;
 }
 
-// 客户平台在完整校验同一组 V2 图片后确认接收。manifest_sha256 必须是
-// 64 个小写十六进制字符；设备只接受发出该图片组的同一 StdMqtt 实例确认。
-message EvidenceImagesAckRequest {
+// 客户平台在完整校验同一 V2 TAR 证据包后确认接收。package_sha256 必须是
+// 64 个小写十六进制字符；设备只接受发出该证据包的同一 StdMqtt 实例确认。
+message EvidencePackageAckRequest {
   uint64 event_id = 1;
   EvidenceKind kind = 2;
-  string manifest_sha256 = 3;
+  string package_sha256 = 3;
 }
 
 message SetCruisePointRequest {
@@ -693,7 +705,7 @@ message RpcRequest {
     Empty get_patrol_status = 75 [deprecated = true];
     EvidenceQueryRequest get_evidence_status = 80;
     EvidenceQueryRequest retry_evidence = 81;
-    EvidenceImagesAckRequest ack_evidence_images = 82;
+    EvidencePackageAckRequest ack_evidence_package = 82;
     GetAlarmCapsRequest get_alarm_caps = 90;
     ListAlarmRulesRequest list_alarm_rules = 91;
     ApplyAlarmRulesRequest apply_alarm_rules = 92;
@@ -902,7 +914,7 @@ message RpcResponse {
     DynamicObjectResponse get_patrol_status = 75 [deprecated = true];
     EvidenceStatusResponse get_evidence_status = 80;
     EvidenceStatusResponse retry_evidence = 81;
-    EvidenceStatusResponse ack_evidence_images = 82;
+    EvidenceStatusResponse ack_evidence_package = 82;
     GetAlarmCapsResponse get_alarm_caps = 90;
     ListAlarmRulesResponse list_alarm_rules = 91;
     ApplyAlarmRulesResponse apply_alarm_rules = 92;

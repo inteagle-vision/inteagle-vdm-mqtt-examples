@@ -21,7 +21,6 @@ REQUIRED_SUFFIXES = {
     "attributes",
     "event",
     "3A",
-    "evidence",
     "rpc/req",
     "rpc/resp",
     "image",

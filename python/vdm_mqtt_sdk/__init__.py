@@ -3,19 +3,19 @@
 from .client import RpcError, VdmMqttClient, VdmMqttClientConfig
 from .codec import (
     DecodedPayload,
-    EvidenceImageChunk,
+    EvidencePackageChunk,
     ImageFrame,
     PayloadFormat,
     VdmCodec,
     VdmTopics,
 )
-from .evidence import CompletedEvidenceSet, EvidenceImageAssembler
+from .evidence import CompletedEvidencePackage, EvidencePackageAssembler
 
 __all__ = [
     "DecodedPayload",
-    "CompletedEvidenceSet",
-    "EvidenceImageChunk",
-    "EvidenceImageAssembler",
+    "CompletedEvidencePackage",
+    "EvidencePackageChunk",
+    "EvidencePackageAssembler",
     "ImageFrame",
     "PayloadFormat",
     "RpcError",

@@ -7,7 +7,7 @@ NanoMQ 自动测试。四种语言使用同一份
 
 设备连接建立时需要明确选择 `JSON` 或 `Protobuf` Payload 格式。云端应按照所选格式
 解析，不应根据 Payload 字节自动猜测格式。`image` Topic 始终使用二进制结构：类型 `1`
-是普通图片，类型 `2` 是 112 字节固定 Header + 最大 128 KiB JPEG 分块；
+是普通图片，类型 `2` 是 76 字节固定 Header + 最大 128 KiB USTAR 证据包分块；
 二者均不使用 JSON 或 Protobuf 包装。
 
 <a id="quick-test"></a>
@@ -48,8 +48,8 @@ NanoMQ 自动测试。四种语言使用同一份
 ```text
 topic=telemetry data={"schemaVersion":1,"displacement":{"sampleFrequencyHz":20,"targets":[{"targetId":"T01","dxMm":[0.125,0.25,0.375],"dyMm":[-0.5,-0.625,-0.75]}],"firstSampleTimestampMs":"1721805600000"}}
 topic=3A data={"schemaVersion":1,"eventId":"9001","alarmId":"701","alarmType":"ALARM_TYPE_DISPLACEMENT_LIMIT","level":"ALARM_LEVEL_ALERT","transition":"ALARM_TRANSITION_TRIGGERED","displacement":{"targetId":"T01","valueMm":3.5,"limitMm":3.0}}
-topic=evidence data={"eventId":"9001","kind":"EVIDENCE_KIND_SNAPSHOT","state":"EVIDENCE_STATE_READY","timestampS":"1721805600"}
-topic=image data={"messageType":2,"headerLength":112,"eventId":"9001","imageIndex":0,"imageCount":1,"actualOffsetMs":-1000,"chunkIndex":0,"chunkCount":1}
+topic=event data={"schemaVersion":1,"timestampS":"1721805600","eventType":"EVENT_TYPE_ALARM_EVIDENCE","alarmEvidence":{"eventId":"9001","kind":"EVIDENCE_KIND_SNAPSHOT","state":"EVIDENCE_STATE_READY"}}
+topic=image data={"messageType":2,"headerLength":76,"packageFormat":1,"evidenceKind":1,"eventId":"9001","packageLength":"10240","chunkIndex":0,"chunkCount":1}
 ```
 
 当前 8 条示例消息同时验证 JSON/Protobuf 业务消息和二进制证据分块。
@@ -59,6 +59,12 @@ topic=image data={"messageType":2,"headerLength":112,"eventId":"9001","imageInde
 
 ```bash
 NANOMQ_PORT=28883 ./run_demo.sh protobuf
+```
+
+默认只监听本机。如需让同一局域网中的真实设备连接测试 Broker，显式设置监听地址：
+
+```bash
+NANOMQ_BIND_ADDRESS=0.0.0.0 NANOMQ_PORT=18883 docker compose up nanomq
 ```
 
 <a id="topic-mapping"></a>
@@ -73,14 +79,19 @@ NANOMQ_PORT=28883 ./run_demo.sh protobuf
 | `vdm/DEMO001/attributes` | `Attributes` | 设备到云端 |
 | `vdm/DEMO001/event` | `Event` | 设备到云端 |
 | `vdm/DEMO001/3A` | `Alarm` | 设备到云端 |
-| `vdm/DEMO001/evidence` | `AlarmEvidence` | 设备到云端 |
 | `vdm/DEMO001/rpc/req` | `RpcRequest` | 云端到设备 |
 | `vdm/DEMO001/rpc/resp` | `RpcResponse` | 设备到云端 |
 | `vdm/DEMO001/image` | 非 Protobuf | 设备到云端 |
 
 四个订阅端都根据 Topic 选择明确的 Protobuf 根消息。带 `schema_version`
-的消息必须等于 `1`；紧凑的 `AlarmEvidence` 本身不重复版本字段。SDK 覆盖
+的消息必须等于 `1`；证据状态使用 `Event.alarm_evidence`，不另设 Topic。SDK 覆盖
 29 个强类型 Protobuf RPC，包括告警管理、证据查询、重试和应用确认。
+
+JSON Event 固定为 `{"type":"...","ts":<Unix秒>,"detail":{...}}`，
+不接受旧的 `event/data` 别名。首发契约只有
+`REF_INIT_RESULT`、`CRUISE_REACHED`、`TARGET_TRACKING` 和
+`ALARM_EVIDENCE`。`TARGET_TRACKING.state` 只有 `LOST|TRACKING`；
+配置规则产生的 `TARGET_LOST` 属于 `3A` 告警，不是普通 Event。
 
 <a id="sdk"></a>
 
@@ -90,7 +101,7 @@ NANOMQ_PORT=28883 ./run_demo.sh protobuf
 - 返回语言对应的 Protobuf 消息对象，同时提供 JSON 兼容字段视图。
 - 解析位移/环境量遥测、设备属性、事件、告警、证据状态、RPC 以及两类图片 Header。
 - 从字典/Map 构造 29 个强类型 Protobuf RPC；JSON 与 Protobuf 均支持 5 个告警管理 RPC。
-- Python 示例提供磁盘优先的有界分块重组、JPEG/SHA-256 校验和 `ackEvidenceImages`。
+- Python 示例提供磁盘优先的有界分块重组、USTAR/SHA-256 校验和 `ackEvidencePackage`。
 - 自动维护并发 RPC 的 `req_id`、超时和错误码，断线重连后自动重新订阅。
 - 四种语言都只以 `code == 0` 判断成功；`1` 是通用失败，其他非零码是可直接处理的细分错误。
 - RPC 在线 Payload 不携带重复的 `msg/message` 文本；SDK 在本地按数字错误码生成可读说明。
@@ -213,7 +224,7 @@ const response = await client.call(
 抓拍证据使用触发它的 `eventId`，因此客户平台的关联键为：
 
 ```text
-deviceId + alarm.eventId == deviceId + alarmEvidence.eventId == imageHeader.eventId
+deviceId + alarm.eventId == deviceId + event.detail.eventId == imageHeader.eventId
 ```
 
 建议平台保存 `deviceId + alarmId` 作为生命周期主键，并将 `eventId`
@@ -221,11 +232,11 @@ deviceId + alarm.eventId == deviceId + alarmEvidence.eventId == imageHeader.even
 
 StdMqtt 客户证据的流程为：
 
-1. 接收 `3A` 告警和 `evidence` 状态，两者可能乱序或重复。
+1. 接收 `3A` 告警和 `event` 中的 `ALARM_EVIDENCE` 状态，两者可能乱序或重复。
 2. 在现有 `image` Topic 接收 `messageType=2` 的 128 KiB 分块。
-3. 按 `deviceId + eventId + imageIndex + chunkIndex` 幂等落盘，校验分块范围、JPEG 长度和 SHA-256。
-4. 全部 `imageCount` 张图片持久化后，从收到该分块的同一 StdMqtt 连接调用 `ackEvidenceImages`。
-5. 设备收到匹配的应用确认后上报 `AVAILABLE`，稳定引用为 `mqtt/v1/{eventId}/{manifestSha256}`。
+3. 按 `deviceId + eventId + packageSha256 + chunkIndex` 幂等落盘，校验分块范围、证据包长度和 SHA-256。
+4. 完整 USTAR 包持久化且验证 `manifest.json` 后，从同一 StdMqtt 连接调用 `ackEvidencePackage`。
+5. 设备收到匹配的应用确认后上报 `SYNCED`；`eventId` 始终是告警与证据包的关联键。
 
 设备只启用一个 StdMqtt 连接时，0.8.5 默认选择该连接发送证据图片；若同时启用多个
 StdMqtt，设备管理员必须明确选择一个客户证据目的地，固件不会猜测。客户平台无需接触
@@ -245,7 +256,7 @@ VDM_EVIDENCE_DIR=./evidence \
 python evidence_receiver.py
 ```
 
-它在 `<VDM_EVIDENCE_DIR>/<eventId>/` 下保存校验后的 JPEG 和本地
+它在 `<VDM_EVIDENCE_DIR>/<eventId>/` 下保存校验后的 USTAR 包和本地
 `receipt.json`。`receipt.json` 是客户接收回执，不伪装成设备内部
 `manifest.json`。示例不包含 Inteagle OSS/STS 凭据或内部上传接口。
 

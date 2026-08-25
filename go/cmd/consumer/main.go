@@ -17,7 +17,7 @@ import (
 )
 
 var requiredSuffixes = map[string]struct{}{
-	"telemetry": {}, "attributes": {}, "event": {}, "3A": {}, "evidence": {},
+	"telemetry": {}, "attributes": {}, "event": {}, "3A": {},
 	"rpc/req": {}, "rpc/resp": {}, "image": {},
 }
 

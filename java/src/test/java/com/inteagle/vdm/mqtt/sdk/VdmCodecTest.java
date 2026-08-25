@@ -64,7 +64,7 @@ final class VdmCodecTest {
         "getMotorAngle", "setMotorZero", "enableMotor", "disableMotor", "getCruisePaths");
     methods = new java.util.HashSet<>(methods);
     methods.addAll(Set.of(
-        "getEvidenceStatus", "retryEvidence", "ackEvidenceImages", "getAlarmCaps",
+        "getEvidenceStatus", "retryEvidence", "ackEvidencePackage", "getAlarmCaps",
         "listAlarmRules", "applyAlarmRules", "getAlarmState", "listAlarmHistory"));
     assertEquals(29, methods.size());
     VdmCodec codec = new VdmCodec(PayloadFormat.PROTOBUF);
@@ -118,27 +118,22 @@ final class VdmCodecTest {
   }
 
   @Test
-  void decodesStrictEvidenceImageChunk() throws Exception {
-    byte[] jpeg = new byte[] {(byte) 0xff, (byte) 0xd8, 'v', 'd', 'm', (byte) 0xff, (byte) 0xd9};
-    byte[] payload = new byte[112 + jpeg.length];
+  void decodesStrictEvidencePackageChunk() throws Exception {
+    byte[] packageBytes = new byte[512];
+    System.arraycopy("ustar".getBytes(), 0, packageBytes, 257, 5);
+    byte[] payload = new byte[76 + packageBytes.length];
     ByteBuffer buffer = ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN);
-    buffer.put(0, (byte) 2).put(1, (byte) 112).put(2, (byte) 1).put(3, (byte) 1);
-    buffer.putLong(4, 1_721_805_600_000L);
-    buffer.putLong(12, 9001L);
-    buffer.putShort(20, (short) 0).putShort(22, (short) 1);
-    buffer.putInt(24, -1000).putInt(28, jpeg.length);
-    System.arraycopy(MessageDigest.getInstance("SHA-256").digest(jpeg), 0, payload, 32, 32);
-    System.arraycopy(MessageDigest.getInstance("SHA-256").digest("manifest".getBytes()), 0, payload, 64, 32);
-    buffer.putShort(96, (short) 0).putShort(98, (short) 1);
-    buffer.putInt(100, 0).putInt(104, jpeg.length).putInt(108, 0);
-    System.arraycopy(jpeg, 0, payload, 112, jpeg.length);
+    buffer.put(0, (byte) 2).put(1, (byte) 76).put(2, (byte) 1).put(3, (byte) 1);
+    buffer.putLong(4, 9001L).putLong(12, packageBytes.length);
+    System.arraycopy(MessageDigest.getInstance("SHA-256").digest(packageBytes), 0, payload, 20, 32);
+    buffer.putInt(52, 0).putInt(56, 1).putLong(60, 0).putInt(68, packageBytes.length).putInt(72, 0);
+    System.arraycopy(packageBytes, 0, payload, 76, packageBytes.length);
 
     VdmCodec codec = new VdmCodec(PayloadFormat.PROTOBUF);
     VdmTopics topics = VdmTopics.forDevice("DEMO001");
     DecodedPayload decoded = codec.decode(topics.topic("image"), topics, payload);
-    EvidenceImageChunk chunk = assertInstanceOf(EvidenceImageChunk.class, decoded.value());
+    EvidencePackageChunk chunk = assertInstanceOf(EvidencePackageChunk.class, decoded.value());
     assertEquals(9001L, chunk.eventId());
-    assertEquals(-1000, chunk.actualOffsetMs());
-    assertEquals(jpeg.length, chunk.chunk().length);
+    assertEquals(packageBytes.length, chunk.chunk().length);
   }
 }

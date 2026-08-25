@@ -30,7 +30,7 @@ const PUBLIC_RPC_FIELDS = Object.freeze({
   getCruisePaths: "getCruisePaths",
   getEvidenceStatus: "getEvidenceStatus",
   retryEvidence: "retryEvidence",
-  ackEvidenceImages: "ackEvidenceImages",
+  ackEvidencePackage: "ackEvidencePackage",
   getAlarmCaps: "getAlarmCaps",
   listAlarmRules: "listAlarmRules",
   applyAlarmRules: "applyAlarmRules",
@@ -68,7 +68,6 @@ const ROOT_TYPES = Object.freeze({
   attributes: "inteagle.vdm.mqtt.v1.Attributes",
   event: "inteagle.vdm.mqtt.v1.Event",
   "3A": "inteagle.vdm.mqtt.v1.Alarm",
-  evidence: "inteagle.vdm.mqtt.v1.AlarmEvidence",
   "rpc/req": "inteagle.vdm.mqtt.v1.RpcRequest",
   "rpc/resp": "inteagle.vdm.mqtt.v1.RpcResponse",
 });
@@ -148,16 +147,11 @@ class VdmCodec {
         ? {
             messageType: value.messageType,
             headerLength: value.headerLength,
-            cameraId: value.cameraId,
-            triggerType: value.triggerType,
-            capturedAtMs: value.capturedAtMs,
+            packageFormat: value.packageFormat,
+            evidenceKind: value.evidenceKind,
             eventId: value.eventId,
-            imageIndex: value.imageIndex,
-            imageCount: value.imageCount,
-            actualOffsetMs: value.actualOffsetMs,
-            jpegLength: value.jpegLength,
-            jpegSha256: value.jpegSha256,
-            manifestSha256: value.manifestSha256,
+            packageLength: value.packageLength,
+            packageSha256: value.packageSha256,
             chunkIndex: value.chunkIndex,
             chunkCount: value.chunkCount,
             chunkOffset: value.chunkOffset,
@@ -187,7 +181,7 @@ class VdmCodec {
         throw new Error(`未支持的 Topic: ${suffix}`);
       }
       value = type.decode(raw);
-      if (suffix !== "evidence" && value.schemaVersion !== SCHEMA_VERSION) {
+      if (value.schemaVersion !== SCHEMA_VERSION) {
         throw new Error(`不支持 schema_version=${value.schemaVersion ?? 0}`);
       }
       data = type.toObject(value, {
@@ -264,7 +258,7 @@ class VdmCodec {
   static decodeImage(payload) {
     payload = Buffer.from(payload);
     if (payload.length > 0 && payload[0] === 2) {
-      return VdmCodec.decodeEvidenceImageChunk(payload);
+      return VdmCodec.decodeEvidencePackageChunk(payload);
     }
     if (payload.length < 10) {
       throw new Error("图片 Payload 小于 VDM Header 与 JPEG 最小长度");
@@ -287,56 +281,50 @@ class VdmCodec {
     };
   }
 
-  static decodeEvidenceImageChunk(payload) {
+  static decodeEvidencePackageChunk(payload) {
     payload = Buffer.from(payload);
-    const headerLength = 112;
+    const headerLength = 76;
     const chunkBytes = 128 * 1024;
     if (payload.length < headerLength) {
-      throw new Error("告警证据图片 Payload 小于 112 字节固定 Header");
+      throw new Error("告警证据包 Payload 小于 76 字节固定 Header");
     }
-    if (payload[0] !== 2 || payload[1] !== headerLength || payload[3] !== 1) {
-      throw new Error("告警证据图片 messageType/headerLen/triggerType 非法");
+    if (payload[0] !== 2 || payload[1] !== headerLength || payload[2] !== 1 || payload[3] !== 1) {
+      throw new Error("当前只支持 USTAR SNAPSHOT 证据包");
     }
-    const capturedAtMs = payload.readBigUInt64BE(4);
-    const eventId = payload.readBigUInt64BE(12);
-    const imageIndex = payload.readUInt16BE(20);
-    const imageCount = payload.readUInt16BE(22);
-    const jpegLength = payload.readUInt32BE(28);
-    const chunkIndex = payload.readUInt16BE(96);
-    const chunkCount = payload.readUInt16BE(98);
-    const chunkOffset = payload.readUInt32BE(100);
-    const chunkLength = payload.readUInt32BE(104);
-    const flags = payload.readUInt32BE(108);
-    const expectedCount = Math.ceil(jpegLength / chunkBytes);
-    const expectedOffset = chunkIndex * chunkBytes;
-    const expectedLength = Math.min(chunkBytes, jpegLength - expectedOffset);
-    if (capturedAtMs === 0n || eventId === 0n || imageCount < 1 || imageCount > 64
-        || imageIndex >= imageCount || jpegLength < 1 || jpegLength > 2 * 1024 * 1024
+    const eventId = payload.readBigUInt64BE(4);
+    const packageLength = payload.readBigUInt64BE(12);
+    const chunkIndex = payload.readUInt32BE(52);
+    const chunkCount = payload.readUInt32BE(56);
+    const chunkOffset = payload.readBigUInt64BE(60);
+    const chunkLength = payload.readUInt32BE(68);
+    const flags = payload.readUInt32BE(72);
+    const expectedCount = Number((packageLength + BigInt(chunkBytes - 1)) / BigInt(chunkBytes));
+    const expectedOffset = BigInt(chunkIndex) * BigInt(chunkBytes);
+    const expectedLength = Number(
+      packageLength - expectedOffset < BigInt(chunkBytes)
+        ? packageLength - expectedOffset : BigInt(chunkBytes),
+    );
+    if (eventId === 0n || packageLength < 1n || packageLength > 32n * 1024n * 1024n
         || chunkCount !== expectedCount || chunkIndex >= chunkCount
         || chunkOffset !== expectedOffset || chunkLength !== expectedLength
         || payload.length !== headerLength + chunkLength || flags !== 0) {
-      throw new Error("告警证据图片身份、索引、分块范围、长度或 flags 非法");
+      throw new Error("告警证据包身份、分块范围、长度或 flags 非法");
     }
     const chunk = Buffer.from(payload.subarray(headerLength));
-    if (chunkIndex === 0 && (chunk.length < 2 || chunk[0] !== 0xff || chunk[1] !== 0xd8)) {
-      throw new Error("告警证据 JPEG 首块缺少 SOI");
+    if (chunkIndex === 0 && (chunk.length < 262 || chunk.subarray(257, 262).toString("ascii") !== "ustar")) {
+      throw new Error("告警证据包首块缺少 USTAR 标识");
     }
     return {
       messageType: 2,
       headerLength,
-      cameraId: payload[2],
-      triggerType: payload[3],
-      capturedAtMs: capturedAtMs.toString(),
+      packageFormat: payload[2],
+      evidenceKind: payload[3],
       eventId: eventId.toString(),
-      imageIndex,
-      imageCount,
-      actualOffsetMs: payload.readInt32BE(24),
-      jpegLength,
-      jpegSha256: payload.subarray(32, 64).toString("hex"),
-      manifestSha256: payload.subarray(64, 96).toString("hex"),
+      packageLength: packageLength.toString(),
+      packageSha256: payload.subarray(20, 52).toString("hex"),
       chunkIndex,
       chunkCount,
-      chunkOffset,
+      chunkOffset: chunkOffset.toString(),
       chunk,
     };
   }

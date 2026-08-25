@@ -12,7 +12,7 @@ services:
   nanomq:
     image: ${NANOMQ_IMAGE:-emqx/nanomq:0.25.2-2@sha256:8d391c73eb084a32accbe13516bbea83e33736542da9ea755c3b3b3417378961}
     ports:
-      - "127.0.0.1:${NANOMQ_PORT:-18883}:1883"
+      - "${NANOMQ_BIND_ADDRESS:-127.0.0.1}:${NANOMQ_PORT:-18883}:1883"
     restart: unless-stopped
 
   python-consumer:

@@ -12,7 +12,6 @@ const REQUIRED_SUFFIXES = new Set([
   "attributes",
   "event",
   "3A",
-  "evidence",
   "rpc/req",
   "rpc/resp",
   "image",

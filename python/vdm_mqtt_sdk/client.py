@@ -229,28 +229,28 @@ class VdmMqttClient:
             timeout=timeout,
         )
 
-    def ack_evidence_images(
+    def ack_evidence_package(
         self,
         event_id: int,
-        manifest_sha256: str,
+        package_sha256: str,
         *,
         timeout: float = 10.0,
     ) -> DecodedPayload:
-        if len(manifest_sha256) != 64 or any(
-            value not in "0123456789abcdef" for value in manifest_sha256
+        if len(package_sha256) != 64 or any(
+            value not in "0123456789abcdef" for value in package_sha256
         ):
-            raise ValueError("manifest_sha256 必须是 64 个小写十六进制字符")
+            raise ValueError("package_sha256 必须是 64 个小写十六进制字符")
         kind = (
             "EVIDENCE_KIND_SNAPSHOT"
             if self.config.payload_format is PayloadFormat.PROTOBUF
             else "SNAPSHOT"
         )
         return self.call(
-            "ackEvidenceImages",
+            "ackEvidencePackage",
             {
                 "eventId": str(event_id),
                 "kind": kind,
-                "manifestSha256": manifest_sha256,
+                "packageSha256": package_sha256,
             },
             timeout=timeout,
         )

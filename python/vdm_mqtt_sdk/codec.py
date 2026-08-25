@@ -14,10 +14,9 @@ import inteagle_vdm_mqtt_v1_pb2 as pb
 
 
 SCHEMA_VERSION = 1
-EVIDENCE_IMAGE_HEADER_LENGTH = 112
+EVIDENCE_PACKAGE_HEADER_LENGTH = 76
 EVIDENCE_CHUNK_BYTES = 128 * 1024
-MAX_EVIDENCE_IMAGE_BYTES = 2 * 1024 * 1024
-MAX_EVIDENCE_IMAGES = 64
+MAX_EVIDENCE_PACKAGE_BYTES = 32 * 1024 * 1024
 
 RPC_CODE_MESSAGES = {
     0: "success",
@@ -112,19 +111,14 @@ class ImageFrame:
 
 
 @dataclass(frozen=True)
-class EvidenceImageChunk:
+class EvidencePackageChunk:
     message_type: int
     header_length: int
-    camera_id: int
-    trigger_type: int
-    captured_at_ms: int
+    package_format: int
+    evidence_kind: int
     event_id: int
-    image_index: int
-    image_count: int
-    actual_offset_ms: int
-    jpeg_length: int
-    jpeg_sha256: bytes
-    manifest_sha256: bytes
+    package_length: int
+    package_sha256: bytes
     chunk_index: int
     chunk_count: int
     chunk_offset: int
@@ -136,7 +130,7 @@ class DecodedPayload:
     topic: str
     suffix: str
     raw: bytes
-    value: dict[str, Any] | Message | ImageFrame | EvidenceImageChunk
+    value: dict[str, Any] | Message | ImageFrame | EvidencePackageChunk
 
     def as_dict(self) -> dict[str, Any]:
         """返回便于日志、Web API 和业务分派使用的完整字段对象。
@@ -155,20 +149,15 @@ class DecodedPayload:
                 "timestampS": self.value.timestamp_s,
                 "jpegBytes": len(self.value.jpeg),
             }
-        if isinstance(self.value, EvidenceImageChunk):
+        if isinstance(self.value, EvidencePackageChunk):
             return {
                 "messageType": self.value.message_type,
                 "headerLength": self.value.header_length,
-                "cameraId": self.value.camera_id,
-                "triggerType": self.value.trigger_type,
-                "capturedAtMs": self.value.captured_at_ms,
+                "packageFormat": self.value.package_format,
+                "evidenceKind": self.value.evidence_kind,
                 "eventId": str(self.value.event_id),
-                "imageIndex": self.value.image_index,
-                "imageCount": self.value.image_count,
-                "actualOffsetMs": self.value.actual_offset_ms,
-                "jpegLength": self.value.jpeg_length,
-                "jpegSha256": self.value.jpeg_sha256.hex(),
-                "manifestSha256": self.value.manifest_sha256.hex(),
+                "packageLength": self.value.package_length,
+                "packageSha256": self.value.package_sha256.hex(),
                 "chunkIndex": self.value.chunk_index,
                 "chunkCount": self.value.chunk_count,
                 "chunkOffset": self.value.chunk_offset,
@@ -186,7 +175,6 @@ PROTOBUF_MESSAGE_TYPES: dict[str, type[Message]] = {
     "attributes": pb.Attributes,
     "event": pb.Event,
     "3A": pb.Alarm,
-    "evidence": pb.AlarmEvidence,
     "rpc/req": pb.RpcRequest,
     "rpc/resp": pb.RpcResponse,
 }
@@ -217,7 +205,7 @@ RPC_REQUEST_TYPES: dict[str, tuple[str, type[Message]]] = {
     "getCruisePaths": ("get_cruise_paths", pb.GetCruisePathsRequest),
     "getEvidenceStatus": ("get_evidence_status", pb.EvidenceQueryRequest),
     "retryEvidence": ("retry_evidence", pb.EvidenceQueryRequest),
-    "ackEvidenceImages": ("ack_evidence_images", pb.EvidenceImagesAckRequest),
+    "ackEvidencePackage": ("ack_evidence_package", pb.EvidencePackageAckRequest),
     "getAlarmCaps": ("get_alarm_caps", pb.GetAlarmCapsRequest),
     "listAlarmRules": ("list_alarm_rules", pb.ListAlarmRulesRequest),
     "applyAlarmRules": ("apply_alarm_rules", pb.ApplyAlarmRulesRequest),
@@ -231,9 +219,9 @@ class VdmCodec:
         self.payload_format = PayloadFormat.parse(payload_format)
 
     @staticmethod
-    def decode_image(payload: bytes) -> ImageFrame | EvidenceImageChunk:
+    def decode_image(payload: bytes) -> ImageFrame | EvidencePackageChunk:
         if payload and payload[0] == 2:
-            return VdmCodec.decode_evidence_image_chunk(payload)
+            return VdmCodec.decode_evidence_package_chunk(payload)
         if len(payload) < 10:
             raise ValueError("图片 Payload 小于 VDM Header 与 JPEG 最小长度")
         header_length = payload[1]
@@ -252,60 +240,49 @@ class VdmCodec:
         )
 
     @staticmethod
-    def decode_evidence_image_chunk(payload: bytes) -> EvidenceImageChunk:
-        if len(payload) < EVIDENCE_IMAGE_HEADER_LENGTH:
-            raise ValueError("告警证据图片 Payload 小于 112 字节固定 Header")
-        if payload[0] != 2 or payload[1] != EVIDENCE_IMAGE_HEADER_LENGTH:
-            raise ValueError("告警证据图片 messageType/headerLen 非法")
-        if payload[3] != 1:
-            raise ValueError("告警证据图片 triggerType 必须为 1")
+    def decode_evidence_package_chunk(payload: bytes) -> EvidencePackageChunk:
+        if len(payload) < EVIDENCE_PACKAGE_HEADER_LENGTH:
+            raise ValueError("告警证据包 Payload 小于 76 字节固定 Header")
+        if payload[0] != 2 or payload[1] != EVIDENCE_PACKAGE_HEADER_LENGTH:
+            raise ValueError("告警证据包 messageType/headerLen 非法")
+        if payload[2] != 1 or payload[3] != 1:
+            raise ValueError("当前只支持 USTAR SNAPSHOT 证据包")
 
-        captured_at_ms = int.from_bytes(payload[4:12], "big")
-        event_id = int.from_bytes(payload[12:20], "big")
-        image_index = int.from_bytes(payload[20:22], "big")
-        image_count = int.from_bytes(payload[22:24], "big")
-        actual_offset_ms = int.from_bytes(payload[24:28], "big", signed=True)
-        jpeg_length = int.from_bytes(payload[28:32], "big")
-        chunk_index = int.from_bytes(payload[96:98], "big")
-        chunk_count = int.from_bytes(payload[98:100], "big")
-        chunk_offset = int.from_bytes(payload[100:104], "big")
-        chunk_length = int.from_bytes(payload[104:108], "big")
-        flags = int.from_bytes(payload[108:112], "big")
+        event_id = int.from_bytes(payload[4:12], "big")
+        package_length = int.from_bytes(payload[12:20], "big")
+        chunk_index = int.from_bytes(payload[52:56], "big")
+        chunk_count = int.from_bytes(payload[56:60], "big")
+        chunk_offset = int.from_bytes(payload[60:68], "big")
+        chunk_length = int.from_bytes(payload[68:72], "big")
+        flags = int.from_bytes(payload[72:76], "big")
 
-        if captured_at_ms == 0 or event_id == 0:
-            raise ValueError("告警证据图片时间或 eventId 非法")
-        if image_count == 0 or image_count > MAX_EVIDENCE_IMAGES or image_index >= image_count:
-            raise ValueError("告警证据图片 imageIndex/imageCount 非法")
-        if jpeg_length == 0 or jpeg_length > MAX_EVIDENCE_IMAGE_BYTES:
-            raise ValueError("告警证据 JPEG 长度超出 1..2 MiB")
-        expected_count = (jpeg_length + EVIDENCE_CHUNK_BYTES - 1) // EVIDENCE_CHUNK_BYTES
+        if event_id == 0:
+            raise ValueError("告警证据包 eventId 非法")
+        if package_length == 0 or package_length > MAX_EVIDENCE_PACKAGE_BYTES:
+            raise ValueError("告警证据包长度超出 1..32 MiB")
+        expected_count = (package_length + EVIDENCE_CHUNK_BYTES - 1) // EVIDENCE_CHUNK_BYTES
         expected_offset = chunk_index * EVIDENCE_CHUNK_BYTES
-        expected_length = min(EVIDENCE_CHUNK_BYTES, jpeg_length - expected_offset)
+        expected_length = min(EVIDENCE_CHUNK_BYTES, package_length - expected_offset)
         if (
             chunk_count != expected_count
             or chunk_index >= chunk_count
             or chunk_offset != expected_offset
             or chunk_length != expected_length
-            or len(payload) != EVIDENCE_IMAGE_HEADER_LENGTH + chunk_length
+            or len(payload) != EVIDENCE_PACKAGE_HEADER_LENGTH + chunk_length
             or flags != 0
         ):
-            raise ValueError("告警证据图片分块范围、长度或 flags 非法")
-        chunk = bytes(payload[EVIDENCE_IMAGE_HEADER_LENGTH:])
-        if chunk_index == 0 and not chunk.startswith(b"\xff\xd8"):
-            raise ValueError("告警证据 JPEG 首块缺少 SOI")
-        return EvidenceImageChunk(
+            raise ValueError("告警证据包分块范围、长度或 flags 非法")
+        chunk = bytes(payload[EVIDENCE_PACKAGE_HEADER_LENGTH:])
+        if chunk_index == 0 and (len(chunk) < 262 or chunk[257:262] != b"ustar"):
+            raise ValueError("告警证据包首块缺少 USTAR 标识")
+        return EvidencePackageChunk(
             message_type=2,
-            header_length=EVIDENCE_IMAGE_HEADER_LENGTH,
-            camera_id=payload[2],
-            trigger_type=payload[3],
-            captured_at_ms=captured_at_ms,
+            header_length=EVIDENCE_PACKAGE_HEADER_LENGTH,
+            package_format=payload[2],
+            evidence_kind=payload[3],
             event_id=event_id,
-            image_index=image_index,
-            image_count=image_count,
-            actual_offset_ms=actual_offset_ms,
-            jpeg_length=jpeg_length,
-            jpeg_sha256=bytes(payload[32:64]),
-            manifest_sha256=bytes(payload[64:96]),
+            package_length=package_length,
+            package_sha256=bytes(payload[20:52]),
             chunk_index=chunk_index,
             chunk_count=chunk_count,
             chunk_offset=chunk_offset,
@@ -315,7 +292,7 @@ class VdmCodec:
     def decode(self, topic: str, topics: VdmTopics, payload: bytes) -> DecodedPayload:
         suffix = topics.suffix(topic)
         if suffix == "image":
-            value: dict[str, Any] | Message | ImageFrame | EvidenceImageChunk = self.decode_image(
+            value: dict[str, Any] | Message | ImageFrame | EvidencePackageChunk = self.decode_image(
                 payload
             )
         elif self.payload_format is PayloadFormat.JSON:
@@ -334,7 +311,7 @@ class VdmCodec:
                 message.ParseFromString(payload)
             except DecodeError as exc:
                 raise ValueError(f"Protobuf 解析失败: {exc}") from exc
-            if suffix != "evidence" and getattr(message, "schema_version", 0) != SCHEMA_VERSION:
+            if getattr(message, "schema_version", 0) != SCHEMA_VERSION:
                 raise ValueError(
                     f"不支持 schema_version={getattr(message, 'schema_version', 0)}"
                 )

@@ -8,8 +8,8 @@ import threading
 import time
 
 from vdm_mqtt_sdk import (
-    EvidenceImageAssembler,
-    EvidenceImageChunk,
+    EvidencePackageAssembler,
+    EvidencePackageChunk,
     VdmMqttClient,
     VdmMqttClientConfig,
     VdmTopics,
@@ -20,15 +20,15 @@ def setting(name: str, default: str) -> str:
     return os.getenv(name, default)
 
 
-assembler = EvidenceImageAssembler(setting("VDM_EVIDENCE_DIR", "./evidence"))
+assembler = EvidencePackageAssembler(setting("VDM_EVIDENCE_DIR", "./evidence"))
 client: VdmMqttClient
 
 
-def acknowledge(event_id: int, manifest_sha256: str) -> None:
+def acknowledge(event_id: int, package_sha256: str) -> None:
     try:
-        response = client.ack_evidence_images(event_id, manifest_sha256)
+        response = client.ack_evidence_package(event_id, package_sha256)
         print(
-            f"ACKED eventId={event_id} manifestSha256={manifest_sha256} "
+            f"ACKED eventId={event_id} packageSha256={package_sha256} "
             f"response={response.as_dict()}",
             flush=True,
         )
@@ -37,25 +37,23 @@ def acknowledge(event_id: int, manifest_sha256: str) -> None:
 
 
 def on_message(message) -> None:
-    if not isinstance(message.value, EvidenceImageChunk):
+    if not isinstance(message.value, EvidencePackageChunk):
         return
     completed = assembler.accept(message.value)
     print(
-        f"CHUNK eventId={message.value.event_id} image={message.value.image_index + 1}/"
-        f"{message.value.image_count} chunk={message.value.chunk_index + 1}/"
+        f"CHUNK eventId={message.value.event_id} chunk={message.value.chunk_index + 1}/"
         f"{message.value.chunk_count}",
         flush=True,
     )
     if completed is not None:
         print(
-            f"VERIFIED eventId={completed.event_id} images={len(completed.image_paths)} "
-            f"dir={completed.image_paths[0].parent}",
+            f"VERIFIED eventId={completed.event_id} package={completed.package_path}",
             flush=True,
         )
         # Paho 的 on_message 在线程内执行；RPC 必须换线程等待响应，避免阻塞网络循环。
         threading.Thread(
             target=acknowledge,
-            args=(completed.event_id, completed.manifest_sha256),
+            args=(completed.event_id, completed.package_sha256),
             daemon=True,
         ).start()
 

@@ -1,44 +1,39 @@
-"""StdMqtt 告警证据 JPEG 分块的有界落盘与完整性校验。"""
+"""StdMqtt 告警证据 USTAR 分块的有界落盘与完整性校验。"""
 
 from __future__ import annotations
 
 import hashlib
 import json
 import os
+import tarfile
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
-from .codec import EvidenceImageChunk
+from .codec import EvidencePackageChunk
 
 
 @dataclass(frozen=True)
-class CompletedEvidenceSet:
+class CompletedEvidencePackage:
     event_id: int
-    manifest_sha256: str
-    image_paths: tuple[Path, ...]
+    package_sha256: str
+    package_path: Path
 
 
 @dataclass
-class _ImageState:
-    jpeg_length: int
-    jpeg_sha256: bytes
+class _PackageState:
+    package_length: int
+    package_sha256: bytes
     chunk_count: int
     received: set[int] = field(default_factory=set)
 
 
-@dataclass
-class _EvidenceState:
-    manifest_sha256: bytes
-    image_count: int
-    images: dict[int, _ImageState] = field(default_factory=dict)
+class EvidencePackageAssembler:
+    """Strict, disk-first USTAR package assembler.
 
-
-class EvidenceImageAssembler:
-    """严格、磁盘优先的证据分块重组器。
-
-    `accept()` 对重复分块幂等；相同身份但内容不同会拒绝。只有全部图片长度、JPEG
-    SOI/EOI 和 SHA-256 均验证通过后才返回 `CompletedEvidenceSet`。生产系统还应把
-    received bitmap 持久化，以便接收服务自身重启后继续去重。
+    Duplicate chunks are idempotent and conflicting bytes are rejected. The
+    package is returned only after its length, SHA-256 and safe USTAR member
+    layout have been verified. Production services should additionally persist
+    the received bitmap when receiver-process restart recovery is required.
     """
 
     def __init__(self, output_dir: str | Path, *, max_pending_events: int = 8) -> None:
@@ -47,37 +42,33 @@ class EvidenceImageAssembler:
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.max_pending_events = max_pending_events
-        self._events: dict[int, _EvidenceState] = {}
+        self._events: dict[int, _PackageState] = {}
 
-    def accept(self, chunk: EvidenceImageChunk) -> CompletedEvidenceSet | None:
+    def accept(self, chunk: EvidencePackageChunk) -> CompletedEvidencePackage | None:
         state = self._events.get(chunk.event_id)
         if state is None:
             if len(self._events) >= self.max_pending_events:
                 raise RuntimeError("待接收证据事件数量超过有界限制")
-            state = _EvidenceState(chunk.manifest_sha256, chunk.image_count)
+            state = _PackageState(
+                chunk.package_length,
+                chunk.package_sha256,
+                chunk.chunk_count,
+            )
             self._events[chunk.event_id] = state
         if (
-            state.manifest_sha256 != chunk.manifest_sha256
-            or state.image_count != chunk.image_count
+            state.package_length != chunk.package_length
+            or state.package_sha256 != chunk.package_sha256
+            or state.chunk_count != chunk.chunk_count
         ):
-            raise ValueError("同一 eventId 的 manifestSha256/imageCount 冲突")
-
-        image = state.images.get(chunk.image_index)
-        if image is None:
-            image = _ImageState(chunk.jpeg_length, chunk.jpeg_sha256, chunk.chunk_count)
-            state.images[chunk.image_index] = image
-        if (
-            image.jpeg_length != chunk.jpeg_length
-            or image.jpeg_sha256 != chunk.jpeg_sha256
-            or image.chunk_count != chunk.chunk_count
-        ):
-            raise ValueError("同一证据图片的长度、SHA-256 或 chunkCount 冲突")
+            raise ValueError("同一 eventId 的证据包标识冲突")
 
         event_dir = self.output_dir / str(chunk.event_id)
         event_dir.mkdir(parents=True, exist_ok=True)
-        part_path = event_dir / f"{chunk.image_index:03d}.jpg.part"
-        final_path = event_dir / f"{chunk.image_index:03d}.jpg"
-        if chunk.chunk_index in image.received:
+        hash_hex = chunk.package_sha256.hex()
+        part_path = event_dir / f"{hash_hex}.tar.part"
+        final_path = event_dir / f"{hash_hex}.tar"
+
+        if chunk.chunk_index in state.received:
             source_path = final_path if final_path.is_file() else part_path
             with source_path.open("rb") as output:
                 output.seek(chunk.chunk_offset)
@@ -90,44 +81,42 @@ class EvidenceImageAssembler:
                 output.write(chunk.chunk)
                 output.flush()
                 os.fsync(output.fileno())
-                image.received.add(chunk.chunk_index)
+            state.received.add(chunk.chunk_index)
 
-        if len(image.received) == image.chunk_count and not final_path.is_file():
-            self._finalize_image(part_path, image)
-
-        if len(state.images) != state.image_count:
-            return None
-        completed_paths = tuple(event_dir / f"{index:03d}.jpg" for index in range(state.image_count))
-        if not all(path.is_file() for path in completed_paths):
+        if len(state.received) != state.chunk_count:
             return None
 
+        data = part_path.read_bytes()
+        if len(data) != state.package_length:
+            raise ValueError("重组后的证据包长度不匹配")
+        if hashlib.sha256(data).digest() != state.package_sha256:
+            raise ValueError("重组后的证据包 SHA-256 不匹配")
+        self._validate_ustar(part_path)
+
+        os.replace(part_path, final_path)
         self._write_receipt(
             event_dir,
             {
                 "eventId": str(chunk.event_id),
                 "kind": "SNAPSHOT",
-                "manifestSha256": chunk.manifest_sha256.hex(),
-                "images": [path.name for path in completed_paths],
+                "packageSha256": hash_hex,
+                "package": final_path.name,
             },
         )
+        self._fsync_directory(event_dir)
         self._events.pop(chunk.event_id, None)
-        return CompletedEvidenceSet(
-            event_id=chunk.event_id,
-            manifest_sha256=chunk.manifest_sha256.hex(),
-            image_paths=completed_paths,
-        )
+        return CompletedEvidencePackage(chunk.event_id, hash_hex, final_path)
 
     @staticmethod
-    def _finalize_image(part_path: Path, image: _ImageState) -> None:
-        data = part_path.read_bytes()
-        if len(data) != image.jpeg_length:
-            raise ValueError("重组后的 JPEG 长度不匹配")
-        if not data.startswith(b"\xff\xd8") or not data.endswith(b"\xff\xd9"):
-            raise ValueError("重组后的 JPEG SOI/EOI 非法")
-        if hashlib.sha256(data).digest() != image.jpeg_sha256:
-            raise ValueError("重组后的 JPEG SHA-256 不匹配")
-        os.replace(part_path, part_path.with_suffix(""))
-        EvidenceImageAssembler._fsync_directory(part_path.parent)
+    def _validate_ustar(path: Path) -> None:
+        with tarfile.open(path, mode="r:") as archive:
+            members = archive.getmembers()
+            if not members or members[0].name != "manifest.json":
+                raise ValueError("证据 USTAR 的第一项必须是 manifest.json")
+            for member in members:
+                name = PurePosixPath(member.name)
+                if name.is_absolute() or ".." in name.parts or not member.isfile():
+                    raise ValueError("证据 USTAR 包含不安全或非普通文件成员")
 
     @staticmethod
     def _write_receipt(event_dir: Path, receipt: dict[str, object]) -> None:
@@ -139,7 +128,6 @@ class EvidenceImageAssembler:
             output.flush()
             os.fsync(output.fileno())
         os.replace(temporary_path, receipt_path)
-        EvidenceImageAssembler._fsync_directory(event_dir)
 
     @staticmethod
     def _fsync_directory(path: Path) -> None:

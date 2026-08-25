@@ -100,28 +100,25 @@ test("解析图片 Header 并保留 JPEG", () => {
   assert.deepEqual(image.jpeg, Buffer.from([0xff, 0xd8, 0xff, 0xd9]));
 });
 
-test("严格解析类型 2 告警证据分块", () => {
-  const jpeg = Buffer.from([0xff, 0xd8, 0x76, 0x64, 0x6d, 0xff, 0xd9]);
-  const payload = Buffer.alloc(112 + jpeg.length);
-  payload.set([2, 112, 1, 1]);
-  payload.writeBigUInt64BE(1721805600000n, 4);
-  payload.writeBigUInt64BE(9001n, 12);
-  payload.writeUInt16BE(0, 20);
-  payload.writeUInt16BE(1, 22);
-  payload.writeInt32BE(-1000, 24);
-  payload.writeUInt32BE(jpeg.length, 28);
-  crypto.createHash("sha256").update(jpeg).digest().copy(payload, 32);
-  crypto.createHash("sha256").update("manifest").digest().copy(payload, 64);
-  payload.writeUInt16BE(0, 96);
-  payload.writeUInt16BE(1, 98);
-  payload.writeUInt32BE(0, 100);
-  payload.writeUInt32BE(jpeg.length, 104);
-  jpeg.copy(payload, 112);
+test("严格解析类型 2 告警证据包分块", () => {
+  const packageBytes = Buffer.alloc(512);
+  packageBytes.write("ustar", 257, "ascii");
+  const payload = Buffer.alloc(76 + packageBytes.length);
+  payload.set([2, 76, 1, 1]);
+  payload.writeBigUInt64BE(9001n, 4);
+  payload.writeBigUInt64BE(BigInt(packageBytes.length), 12);
+  crypto.createHash("sha256").update(packageBytes).digest().copy(payload, 20);
+  payload.writeUInt32BE(0, 52);
+  payload.writeUInt32BE(1, 56);
+  payload.writeBigUInt64BE(0n, 60);
+  payload.writeUInt32BE(packageBytes.length, 68);
+  payload.writeUInt32BE(0, 72);
+  packageBytes.copy(payload, 76);
   const chunk = VdmCodec.decodeImage(payload);
   assert.equal(chunk.messageType, 2);
   assert.equal(chunk.eventId, "9001");
-  assert.equal(chunk.actualOffsetMs, -1000);
-  assert.deepEqual(chunk.chunk, jpeg);
+  assert.equal(chunk.packageLength, "512");
+  assert.deepEqual(chunk.chunk, packageBytes);
 });
 
 test("不同云客户端实例不共享 RPC pending 表", () => {

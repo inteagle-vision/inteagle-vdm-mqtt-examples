@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import json
 import hashlib
+import io
 import os
+import tarfile
 import threading
 import time
 from typing import Any
@@ -25,28 +27,41 @@ def json_bytes(value: dict[str, Any]) -> bytes:
 
 EVIDENCE_EVENT_ID = 9_001
 EVIDENCE_JPEG = b"\xff\xd8vdm-evidence-demo\xff\xd9"
-EVIDENCE_MANIFEST_SHA256 = hashlib.sha256(b"vdm-evidence-manifest-demo").digest()
+def evidence_package() -> bytes:
+    manifest = json_bytes(
+        {
+            "eventId": str(EVIDENCE_EVENT_ID),
+            "kind": "SNAPSHOT",
+            "images": [{"file": "000.jpg", "sha256": hashlib.sha256(EVIDENCE_JPEG).hexdigest()}],
+        }
+    )
+    output = io.BytesIO()
+    with tarfile.open(fileobj=output, mode="w", format=tarfile.USTAR_FORMAT) as archive:
+        for name, content in (("manifest.json", manifest), ("000.jpg", EVIDENCE_JPEG)):
+            info = tarfile.TarInfo(name)
+            info.size = len(content)
+            info.mtime = 0
+            info.uid = 0
+            info.gid = 0
+            info.mode = 0o600
+            archive.addfile(info, io.BytesIO(content))
+    return output.getvalue()
 
 
-def evidence_image_frame() -> bytes:
-    jpeg_sha256 = hashlib.sha256(EVIDENCE_JPEG).digest()
+def evidence_package_frame() -> bytes:
+    package = evidence_package()
     header = bytearray()
-    header.extend((2, 112, 0, 1))
-    header.extend((TIMESTAMP_S * 1000).to_bytes(8, "big"))
+    header.extend((2, 76, 1, 1))
     header.extend(EVIDENCE_EVENT_ID.to_bytes(8, "big"))
-    header.extend((0).to_bytes(2, "big"))
-    header.extend((1).to_bytes(2, "big"))
-    header.extend((-1000).to_bytes(4, "big", signed=True))
-    header.extend(len(EVIDENCE_JPEG).to_bytes(4, "big"))
-    header.extend(jpeg_sha256)
-    header.extend(EVIDENCE_MANIFEST_SHA256)
-    header.extend((0).to_bytes(2, "big"))
-    header.extend((1).to_bytes(2, "big"))
+    header.extend(len(package).to_bytes(8, "big"))
+    header.extend(hashlib.sha256(package).digest())
     header.extend((0).to_bytes(4, "big"))
-    header.extend(len(EVIDENCE_JPEG).to_bytes(4, "big"))
+    header.extend((1).to_bytes(4, "big"))
+    header.extend((0).to_bytes(8, "big"))
+    header.extend(len(package).to_bytes(4, "big"))
     header.extend((0).to_bytes(4, "big"))
-    assert len(header) == 112
-    return bytes(header) + EVIDENCE_JPEG
+    assert len(header) == 76
+    return bytes(header) + package
 
 
 def protobuf_fixtures() -> list[tuple[str, bytes]]:
@@ -69,9 +84,9 @@ def protobuf_fixtures() -> list[tuple[str, bytes]]:
     event = pb.Event(
         schema_version=1,
         timestamp_s=TIMESTAMP_S,
-        event_type=pb.EVENT_TYPE_INIT_REFERENCE_TARGET,
+        event_type=pb.EVENT_TYPE_REF_INIT_RESULT,
     )
-    event.init_reference_target.successful_target_ids.append("T01")
+    event.ref_init_result.successful_target_ids.append("T01")
 
     alarm = pb.Alarm(
         schema_version=1,
@@ -89,12 +104,14 @@ def protobuf_fixtures() -> list[tuple[str, bytes]]:
     alarm.displacement.value_mm = 3.5
     alarm.displacement.limit_mm = 3.0
 
-    evidence = pb.AlarmEvidence(
-        event_id=EVIDENCE_EVENT_ID,
-        kind=pb.EVIDENCE_KIND_SNAPSHOT,
-        state=pb.EVIDENCE_STATE_READY,
+    evidence = pb.Event(
+        schema_version=1,
         timestamp_s=TIMESTAMP_S,
+        event_type=pb.EVENT_TYPE_ALARM_EVIDENCE,
     )
+    evidence.alarm_evidence.event_id = EVIDENCE_EVENT_ID
+    evidence.alarm_evidence.kind = pb.EVIDENCE_KIND_SNAPSHOT
+    evidence.alarm_evidence.state = pb.EVIDENCE_STATE_READY
 
     request = pb.RpcRequest(schema_version=1, req_id=42)
     request.get_attr.keys.extend(("deviceId", "fwVer"))
@@ -109,10 +126,10 @@ def protobuf_fixtures() -> list[tuple[str, bytes]]:
         ("attributes", attributes.SerializeToString(deterministic=True)),
         ("event", event.SerializeToString(deterministic=True)),
         ("3A", alarm.SerializeToString(deterministic=True)),
-        ("evidence", evidence.SerializeToString(deterministic=True)),
+        ("event", evidence.SerializeToString(deterministic=True)),
         ("rpc/req", request.SerializeToString(deterministic=True)),
         ("rpc/resp", response.SerializeToString(deterministic=True)),
-        ("image", evidence_image_frame()),
+        ("image", evidence_package_frame()),
     ]
 
 
@@ -151,9 +168,9 @@ def json_fixtures() -> list[tuple[str, bytes]]:
             "event",
             json_bytes(
                 {
-                    "event": "InitRefTarget",
+                    "type": "REF_INIT_RESULT",
                     "ts": TIMESTAMP_S,
-                    "data": {"ok": ["T01"], "fail": []},
+                    "detail": {"ok": ["T01"], "fail": []},
                 }
             ),
         ),
@@ -179,13 +196,16 @@ def json_fixtures() -> list[tuple[str, bytes]]:
             ),
         ),
         (
-            "evidence",
+            "event",
             json_bytes(
                 {
-                    "eventId": str(EVIDENCE_EVENT_ID),
-                    "kind": "SNAPSHOT",
-                    "state": "READY",
+                    "type": "ALARM_EVIDENCE",
                     "ts": TIMESTAMP_S,
+                    "detail": {
+                        "eventId": str(EVIDENCE_EVENT_ID),
+                        "kind": "SNAPSHOT",
+                        "state": "READY",
+                    },
                 }
             ),
         ),
@@ -205,7 +225,7 @@ def json_fixtures() -> list[tuple[str, bytes]]:
                 }
             ),
         ),
-        ("image", evidence_image_frame()),
+        ("image", evidence_package_frame()),
     ]
 
 

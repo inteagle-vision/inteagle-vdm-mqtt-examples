@@ -19,7 +19,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /** 使用 Java SDK 订阅、强类型解析并输出 VDM MQTT Payload。 */
 public final class Consumer {
   private static final Set<String> REQUIRED_SUFFIXES = Set.of(
-      "telemetry", "attributes", "event", "3A", "evidence", "rpc/req", "rpc/resp", "image");
+      "telemetry", "attributes", "event", "3A", "rpc/req", "rpc/resp", "image");
 
   private final PayloadFormat format = PayloadFormat.parse(setting("VDM_PAYLOAD_FORMAT", "protobuf"));
   private final String runId = setting("VDM_RUN_ID", "manual");

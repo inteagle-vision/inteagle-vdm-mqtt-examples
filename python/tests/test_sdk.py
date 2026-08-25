@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import json
 import hashlib
+import io
+import tarfile
 import tempfile
 import unittest
 
 import inteagle_vdm_mqtt_v1_pb2 as pb
 
 from vdm_mqtt_sdk import (
-    EvidenceImageAssembler,
-    EvidenceImageChunk,
+    EvidencePackageAssembler,
+    EvidencePackageChunk,
     ImageFrame,
     PayloadFormat,
     VdmCodec,
@@ -124,72 +126,78 @@ class VdmCodecTests(unittest.TestCase):
             },
         )
 
-    def test_evidence_image_chunk_is_strictly_decoded_and_reassembled(self) -> None:
-        jpeg = b"\xff\xd8evidence\xff\xd9"
-        manifest_sha256 = hashlib.sha256(b"manifest").digest()
-        header = bytearray((2, 112, 1, 1))
-        header.extend((1_721_805_600_000).to_bytes(8, "big"))
-        header.extend((9001).to_bytes(8, "big"))
-        header.extend((0).to_bytes(2, "big"))
-        header.extend((1).to_bytes(2, "big"))
-        header.extend((-1000).to_bytes(4, "big", signed=True))
-        header.extend(len(jpeg).to_bytes(4, "big"))
-        header.extend(hashlib.sha256(jpeg).digest())
-        header.extend(manifest_sha256)
-        header.extend((0).to_bytes(2, "big"))
-        header.extend((1).to_bytes(2, "big"))
+    @staticmethod
+    def _evidence_package(padding: int = 0) -> bytes:
+        output = io.BytesIO()
+        with tarfile.open(fileobj=output, mode="w", format=tarfile.USTAR_FORMAT) as archive:
+            for name, data in (
+                ("manifest.json", b'{"eventId":"9001"}'),
+                ("frame-000.jpg", b"\xff\xd8evidence\xff\xd9" + b"x" * padding),
+            ):
+                info = tarfile.TarInfo(name)
+                info.size = len(data)
+                info.mtime = 0
+                archive.addfile(info, io.BytesIO(data))
+        return output.getvalue()
+
+    @staticmethod
+    def _package_chunk(package: bytes, event_id: int, chunk_index: int) -> EvidencePackageChunk:
+        chunk_bytes = 128 * 1024
+        chunk_count = (len(package) + chunk_bytes - 1) // chunk_bytes
+        offset = chunk_index * chunk_bytes
+        return EvidencePackageChunk(
+            message_type=2,
+            header_length=76,
+            package_format=1,
+            evidence_kind=1,
+            event_id=event_id,
+            package_length=len(package),
+            package_sha256=hashlib.sha256(package).digest(),
+            chunk_index=chunk_index,
+            chunk_count=chunk_count,
+            chunk_offset=offset,
+            chunk=package[offset : offset + chunk_bytes],
+        )
+
+    def test_evidence_package_chunk_is_strictly_decoded_and_reassembled(self) -> None:
+        package = self._evidence_package()
+        source = self._package_chunk(package, 9001, 0)
+        header = bytearray((2, 76, 1, 1))
+        header.extend(source.event_id.to_bytes(8, "big"))
+        header.extend(source.package_length.to_bytes(8, "big"))
+        header.extend(source.package_sha256)
+        header.extend(source.chunk_index.to_bytes(4, "big"))
+        header.extend(source.chunk_count.to_bytes(4, "big"))
+        header.extend(source.chunk_offset.to_bytes(8, "big"))
+        header.extend(len(source.chunk).to_bytes(4, "big"))
         header.extend((0).to_bytes(4, "big"))
-        header.extend(len(jpeg).to_bytes(4, "big"))
-        header.extend((0).to_bytes(4, "big"))
-        payload = bytes(header) + jpeg
+        payload = bytes(header) + source.chunk
 
         chunk = VdmCodec.decode_image(payload)
-        self.assertIsInstance(chunk, EvidenceImageChunk)
+        self.assertIsInstance(chunk, EvidencePackageChunk)
         self.assertEqual(chunk.event_id, 9001)
-        self.assertEqual(chunk.actual_offset_ms, -1000)
-        self.assertEqual(chunk.manifest_sha256, manifest_sha256)
+        self.assertEqual(chunk.package_sha256, hashlib.sha256(package).digest())
         with tempfile.TemporaryDirectory() as directory:
-            completed = EvidenceImageAssembler(directory).accept(chunk)
+            completed = EvidencePackageAssembler(directory).accept(chunk)
             self.assertIsNotNone(completed)
             self.assertEqual(completed.event_id, 9001)
-            self.assertEqual(completed.image_paths[0].read_bytes(), jpeg)
+            self.assertEqual(completed.package_path.read_bytes(), package)
 
         malformed = bytearray(payload)
-        malformed[100:104] = (1).to_bytes(4, "big")
+        malformed[60:68] = (1).to_bytes(8, "big")
         with self.assertRaises(ValueError):
             VdmCodec.decode_image(bytes(malformed))
 
-    def test_completed_image_chunk_duplicate_is_idempotent_while_group_is_pending(self) -> None:
-        jpeg = b"\xff\xd8one\xff\xd9"
-        manifest_sha256 = hashlib.sha256(b"two-images").digest()
-
-        def make_chunk(image_index: int) -> EvidenceImageChunk:
-            return EvidenceImageChunk(
-                message_type=2,
-                header_length=112,
-                camera_id=0,
-                trigger_type=1,
-                captured_at_ms=1_721_805_600_000 + image_index,
-                event_id=9002,
-                image_index=image_index,
-                image_count=2,
-                actual_offset_ms=image_index * 100,
-                jpeg_length=len(jpeg),
-                jpeg_sha256=hashlib.sha256(jpeg).digest(),
-                manifest_sha256=manifest_sha256,
-                chunk_index=0,
-                chunk_count=1,
-                chunk_offset=0,
-                chunk=jpeg,
-            )
-
+    def test_package_chunk_duplicate_is_idempotent_while_pending(self) -> None:
+        package = self._evidence_package(140_000)
         with tempfile.TemporaryDirectory() as directory:
-            assembler = EvidenceImageAssembler(directory)
-            self.assertIsNone(assembler.accept(make_chunk(0)))
-            self.assertIsNone(assembler.accept(make_chunk(0)))
-            completed = assembler.accept(make_chunk(1))
+            assembler = EvidencePackageAssembler(directory)
+            first = self._package_chunk(package, 9002, 0)
+            self.assertIsNone(assembler.accept(first))
+            self.assertIsNone(assembler.accept(first))
+            completed = assembler.accept(self._package_chunk(package, 9002, 1))
             self.assertIsNotNone(completed)
-            self.assertEqual(len(completed.image_paths), 2)
+            self.assertEqual(completed.package_path.read_bytes(), package)
 
 
 if __name__ == "__main__":

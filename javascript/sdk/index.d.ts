@@ -23,7 +23,7 @@ export type PublicRpcMethod =
   | "getCruisePaths"
   | "getEvidenceStatus"
   | "retryEvidence"
-  | "ackEvidenceImages"
+  | "ackEvidencePackage"
   | "getAlarmCaps"
   | "listAlarmRules"
   | "applyAlarmRules"
@@ -50,22 +50,17 @@ export interface ImageFrame {
   jpeg: Uint8Array;
 }
 
-export interface EvidenceImageChunk {
+export interface EvidencePackageChunk {
   messageType: 2;
-  headerLength: 112;
-  cameraId: number;
-  triggerType: 1;
-  capturedAtMs: string;
+  headerLength: 76;
+  packageFormat: 1;
+  evidenceKind: 1;
   eventId: string;
-  imageIndex: number;
-  imageCount: number;
-  actualOffsetMs: number;
-  jpegLength: number;
-  jpegSha256: string;
-  manifestSha256: string;
+  packageLength: string;
+  packageSha256: string;
   chunkIndex: number;
   chunkCount: number;
-  chunkOffset: number;
+  chunkOffset: string;
   chunk: Uint8Array;
 }
 
@@ -73,7 +68,7 @@ export interface DecodedPayload {
   topic: string;
   suffix: string;
   raw: Uint8Array;
-  value: object | ImageFrame | EvidenceImageChunk;
+  value: object | ImageFrame | EvidencePackageChunk;
   data: Record<string, unknown>;
 }
 
@@ -92,8 +87,8 @@ export class VdmCodec {
     message: string;
     responseField: string | null;
   };
-  static decodeImage(payload: Uint8Array): ImageFrame | EvidenceImageChunk;
-  static decodeEvidenceImageChunk(payload: Uint8Array): EvidenceImageChunk;
+  static decodeImage(payload: Uint8Array): ImageFrame | EvidencePackageChunk;
+  static decodeEvidencePackageChunk(payload: Uint8Array): EvidencePackageChunk;
 }
 
 export interface VdmMqttClientConfig {
