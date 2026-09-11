@@ -10,6 +10,7 @@ RUN --mount=type=cache,target=/root/.m2 \
 
 WORKDIR /src
 COPY proto /src/proto
+COPY examples /src/examples
 COPY java/src /src/java/src
 WORKDIR /src/java
 RUN --mount=type=cache,target=/root/.m2 \

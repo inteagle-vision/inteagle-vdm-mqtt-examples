@@ -1,0 +1,77 @@
+name: inteagle-vdm-mqtt-examples
+
+x-example-environment: &example-environment
+  MQTT_HOST: nanomq
+  MQTT_PORT: "1883"
+  VDM_BASE_TOPIC: vdm/DEMO001
+  VDM_PAYLOAD_FORMAT: ${VDM_PAYLOAD_FORMAT:-protobuf}
+  VDM_RUN_ID: ${VDM_RUN_ID:-manual}
+  VDM_WAIT_TIMEOUT: ${VDM_WAIT_TIMEOUT:-45}
+
+services:
+  nanomq:
+    image: ${NANOMQ_IMAGE:-emqx/nanomq:0.25.2-2@sha256:8d391c73eb084a32accbe13516bbea83e33736542da9ea755c3b3b3417378961}
+    ports:
+      - "${NANOMQ_BIND_ADDRESS:-127.0.0.1}:${NANOMQ_PORT:-18883}:1883"
+    restart: unless-stopped
+
+  python-consumer:
+    build:
+      context: ..
+      dockerfile: python/Dockerfile
+    command: ["python", "consumer.py"]
+    environment:
+      <<: *example-environment
+      VDM_CONSUMER_NAME: python
+    depends_on:
+      - nanomq
+    restart: "no"
+
+  go-consumer:
+    build:
+      context: ..
+      dockerfile: go/Dockerfile
+    environment:
+      <<: *example-environment
+      VDM_CONSUMER_NAME: go
+    depends_on:
+      - nanomq
+    restart: "no"
+
+  java-consumer:
+    build:
+      context: ..
+      dockerfile: java/Dockerfile
+    environment:
+      <<: *example-environment
+      VDM_CONSUMER_NAME: java
+    depends_on:
+      - nanomq
+    restart: "no"
+
+  javascript-consumer:
+    build:
+      context: ..
+      dockerfile: javascript/Dockerfile
+    environment:
+      <<: *example-environment
+      VDM_CONSUMER_NAME: javascript
+    depends_on:
+      - nanomq
+    restart: "no"
+
+  publisher:
+    build:
+      context: ..
+      dockerfile: python/Dockerfile
+    command: ["python", "publisher.py"]
+    environment:
+      <<: *example-environment
+      VDM_REQUIRED_CONSUMERS: python,go,java,javascript
+    depends_on:
+      - nanomq
+      - python-consumer
+      - go-consumer
+      - java-consumer
+      - javascript-consumer
+    restart: "no"

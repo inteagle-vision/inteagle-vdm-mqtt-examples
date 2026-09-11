@@ -177,3 +177,38 @@ func TestDecodeReturnsReadableFields(t *testing.T) {
 		t.Fatalf("unexpected readable fields: %#v", fields)
 	}
 }
+
+func TestOptionalSubscriptionsKeepWildcardDefaultAndRejectForeignTopics(t *testing.T) {
+	topics, _ := TopicsForDevice("device1")
+	config := Config{Topics: topics, QoS: 1}
+	actual, err := subscriptionTopics(config)
+	if err != nil || len(actual) != 1 || actual["vdm/device1/#"] != 1 {
+		t.Fatalf("default changed: %v %v", actual, err)
+	}
+	config.SubscriptionSuffixes = []string{"telemetry", "attributes", "telemetry"}
+	actual, err = subscriptionTopics(config)
+	if err != nil || len(actual) != 2 || actual["vdm/device1/telemetry"] != 1 || actual["vdm/device1/attributes"] != 1 {
+		t.Fatalf("filtered: %v %v", actual, err)
+	}
+	for _, value := range []string{"#", "+", "vdm/other/image", "../image", ""} {
+		config.SubscriptionSuffixes = []string{value}
+		if _, err := subscriptionTopics(config); err == nil {
+			t.Fatalf("accepted %q", value)
+		}
+	}
+}
+
+func TestSubscriptionReadinessRejectsMissingAndFailedSUBACK(t *testing.T) {
+	requested := map[string]byte{"vdm/device1/telemetry": 1, "vdm/device1/attributes": 1}
+	if err := validateSubscriptionResults(requested, map[string]byte{"vdm/device1/telemetry": 1, "vdm/device1/attributes": 0}); err != nil {
+		t.Fatal(err)
+	}
+	for _, granted := range []map[string]byte{
+		{"vdm/device1/telemetry": 1, "vdm/device1/attributes": 128},
+		{"vdm/device1/telemetry": 1},
+	} {
+		if err := validateSubscriptionResults(requested, granted); err == nil {
+			t.Fatalf("invalid SUBACK accepted: %v", granted)
+		}
+	}
+}

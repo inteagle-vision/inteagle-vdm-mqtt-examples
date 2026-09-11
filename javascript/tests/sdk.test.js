@@ -9,6 +9,7 @@ const test = require("node:test");
 
 const {
   AlarmSnapshotPackageAssembler,
+  RpcError,
   PUBLIC_RPC_FIELDS,
   VdmCodec,
   VdmMqttClient,
@@ -284,4 +285,200 @@ test("断线清理当前客户端的全部 RPC pending", async () => {
 
   assert.equal(client.pending.size, 0);
   assert.match(rejected.message, /connection lost/);
+});
+
+test("integration guide alarm requests preserve typed rules, enums and optional false", () => {
+  const cases = JSON.parse(fs.readFileSync(path.join(__dirname, "../../examples/alarms/requests.json")));
+  for (const item of cases) {
+    for (const format of ["protobuf", "json"]) {
+      const codec = new VdmCodec(format);
+      const encoded = codec.encodeRpcRequest(item.method, item[format], 91);
+      if (format === "json") {
+        assert.deepEqual(JSON.parse(encoded.payload), { reqId: 91, method: item.method, params: item.json });
+      } else {
+        const fields = codec.rpcRequestType.toObject(codec.rpcRequestType.decode(encoded.payload), {
+          enums: String, longs: String, defaults: false,
+        });
+        assert.deepEqual(fields, { schemaVersion: 1, reqId: 91, [item.method]: item.protobuf }, item.name);
+      }
+    }
+  }
+});
+
+test("alarm lifecycle preserves uint64 IDs and omits terminal levels", () => {
+  const cases = JSON.parse(fs.readFileSync(path.join(__dirname, "../../examples/alarms/events.json")));
+  const topics = VdmTopics.forDevice("DEMO001");
+  for (const item of cases) {
+    for (const format of ["protobuf", "json"]) {
+      const codec = new VdmCodec(format);
+      const value = item[format];
+      const type = codec.types["3A"];
+      const raw = format === "json" ? Buffer.from(JSON.stringify(value))
+        : type.encode(type.fromObject(value)).finish();
+      const decoded = codec.decode(topics.topic("3A"), topics, raw);
+      assert.equal(decoded.data.eventId, value.eventId);
+      assert.equal(decoded.data.alarmId, value.alarmId);
+      assert.equal(Object.hasOwn(decoded.data, "level"), Object.hasOwn(value, "level"));
+      assert.equal(Object.hasOwn(decoded.value, "level"), Object.hasOwn(value, "level"));
+    }
+  }
+});
+
+test("Protobuf RPC rejects JSON rule shape, unknown enum, multiple oneofs and unsafe IDs", () => {
+  const codec = new VdmCodec("protobuf");
+  assert.throws(() => codec.encodeRpcRequest("applyAlarmRules", { upsert: [{ type: "VIN_LOW" }] }, 1), /unknown field/);
+  assert.throws(() => codec.encodeRpcRequest("applyAlarmRules", { upsert: [{ voltageLow: { alarmType: "TYPO" } }] }, 1), /invalid enum/);
+  assert.throws(() => codec.encodeRpcRequest("applyAlarmRules", { upsert: [{ voltageLow: {}, targetLost: {} }] }, 1), /multiple oneof/);
+  assert.throws(() => codec.encodeRpcRequest("getEvidenceStatus", { eventId: 9007199254740992 }, 1), /decimal string/);
+  const raw = codec.encodeRpcRequest("getEvidenceStatus", { eventId: "9007199254740993", kind: "EVIDENCE_KIND_SNAPSHOT" }, 1).payload;
+  assert.equal(codec.rpcRequestType.decode(raw).getEvidenceStatus.eventId.toString(), "9007199254740993");
+});
+
+test("Protobuf RPC rejects scalar coercion that would change a rule or evidence ID", () => {
+  const codec = new VdmCodec("protobuf");
+  const rule = (enabled) => ({ upsert: [{ targetLost: { common: { enabled } } }] });
+  for (const enabled of ["false", "true", 0, 1]) {
+    assert.throws(() => codec.encodeRpcRequest("applyAlarmRules", rule(enabled), 1), /boolean/);
+  }
+  const disabled = codec.encodeRpcRequest("applyAlarmRules", rule(false), 1).payload;
+  assert.equal(codec.rpcRequestType.decode(disabled).applyAlarmRules.upsert[0].targetLost.common.enabled, false);
+  for (const eventId of ["-1", "18446744073709551616", "1.5", "wrong", {}]) {
+    assert.throws(() => codec.encodeRpcRequest("getEvidenceStatus", { eventId }, 1), /64-bit integer/);
+  }
+  const largest = codec.encodeRpcRequest("getEvidenceStatus", { eventId: "18446744073709551615" }, 1).payload;
+  assert.equal(codec.rpcRequestType.decode(largest).getEvidenceStatus.eventId.toString(), "18446744073709551615");
+  for (const id of [-1, 2 ** 32, 1.5, "12"]) {
+    assert.throws(() => codec.encodeRpcRequest("applyAlarmRules", { deleteIds: [id] }, 1), /32-bit integer/);
+  }
+  for (const enter of ["10", NaN, Infinity, 1e40]) {
+    assert.throws(() => codec.encodeRpcRequest("applyAlarmRules", {
+      upsert: [{ voltageLow: { levels: { alarm: { enter } } } }],
+    }, 1), /finite float/);
+  }
+  assert.throws(() => codec.encodeRpcRequest("getAttr", { keys: [123] }, 1), /string/);
+});
+
+test("optional subscription suffixes preserve default and select data/RPC topics", async () => {
+  for (const suffixes of [undefined, ["telemetry", "attributes"], ["image", "rpc/resp"]]) {
+    const client = new VdmMqttClient({
+      host: "localhost", port: 1883, topics: VdmTopics.forDevice("DEMO001"),
+      payloadFormat: "json", subscriptionSuffixes: suffixes,
+    });
+    let actual;
+    client.client = { subscribe: (topics, options, done) => {
+      actual = topics;
+      done(null, (Array.isArray(topics) ? topics : [topics]).map((topic) => ({ topic, qos: 1 })));
+    } };
+    await client.subscribe();
+    assert.deepEqual(actual, suffixes?.map((suffix) => `vdm/DEMO001/${suffix}`) ?? "vdm/DEMO001/#");
+  }
+  for (const suffixes of [[], [""], ["#"], ["+"], ["telemetry/#"], ["unknown"], "telemetry"]) {
+    assert.throws(() => new VdmMqttClient({
+      host: "localhost", port: 1883, topics: VdmTopics.forDevice("DEMO001"),
+      payloadFormat: "json", subscriptionSuffixes: suffixes,
+    }), /subscriptionSuffixes/);
+  }
+});
+
+test("SUBACK rejects refused or incomplete subscriptions before reporting ready", async () => {
+  const client = new VdmMqttClient({
+    host: "localhost", port: 1883, topics: VdmTopics.forDevice("DEMO001"),
+    payloadFormat: "json", subscriptionSuffixes: ["telemetry", "attributes"],
+  });
+  for (const granted of [undefined, [], [{ qos: 1 }], [{ qos: 1 }, { qos: 128 }]]) {
+    client.client = { subscribe: (topics, options, done) => done(null, granted) };
+    await assert.rejects(client.subscribe(), /未确认全部订阅/);
+  }
+  client.client = { subscribe: (topics, options, done) => done(new Error("denied")) };
+  await assert.rejects(client.subscribe(), /denied/);
+});
+
+test("evidence worker completes only a verified on-disk package and keeps a bounded queue", async () => {
+  const { createEvidenceProcessor } = require("../evidence_receiver");
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "vdm-js-worker-"));
+  const packageBytes = snapshotUstar();
+  let resolveCompleted;
+  let rejectCompleted;
+  const completed = new Promise((resolve, reject) => { resolveCompleted = resolve; rejectCompleted = reject; });
+  let completionCount = 0;
+  const processor = createEvidenceProcessor({
+    outputDirectory: directory,
+    onComplete: (value) => { completionCount += 1; resolveCompleted(value); },
+    onError: rejectCompleted,
+  });
+  try {
+    processor.enqueue(snapshotChunk(packageBytes, "9001", 0));
+    assert.equal(completionCount, 0);
+    processor.enqueue(snapshotChunk(packageBytes, "9001", 1));
+    const result = await completed;
+    assert.deepEqual(fs.readFileSync(result.packagePath), packageBytes);
+    assert.ok(fs.existsSync(path.join(path.dirname(result.packagePath), "receipt.json")));
+    assert.equal(completionCount, 1);
+  } finally {
+    await processor.close();
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+
+  const queueDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "vdm-js-bounded-worker-"));
+  const bounded = createEvidenceProcessor({ outputDirectory: queueDirectory, maxQueuedChunks: 1, onComplete() {}, onError() {} });
+  try {
+    bounded.enqueue(snapshotChunk(packageBytes, "9001", 0));
+    bounded.enqueue(snapshotChunk(packageBytes, "9001", 1));
+    assert.throws(() => bounded.enqueue(snapshotChunk(packageBytes, "9001", 1)), /queue full/);
+  } finally {
+    await bounded.close();
+    fs.rmSync(queueDirectory, { recursive: true, force: true });
+  }
+});
+
+test("RPC IDs start from a cryptographic random seed and remain nonzero int32", (t) => {
+  const random = t.mock.method(crypto, "randomInt", () => 123456);
+  const client = new VdmMqttClient({
+    host: "localhost", port: 1883, topics: VdmTopics.forDevice("DEMO001"), payloadFormat: "json",
+  });
+  assert.deepEqual(random.mock.calls[0].arguments, [1, 2147483647]);
+  assert.equal(client.nextRequestId(), 123457);
+  client.nextReqId = 2147483647;
+  assert.equal(client.nextRequestId(), -2147483648);
+  client.nextReqId = -1;
+  assert.equal(client.nextRequestId(), 1);
+});
+
+test("evidence ACK retries transient errors at most four times with bounded backoff", async () => {
+  const { acknowledgeWithRetry } = require("../evidence_receiver");
+  const completed = { eventId: "9001", packageSha256: "a".repeat(64) };
+  for (const error of [new RpcError(1, 4, "busy"), new RpcError(1, 5, "temporary"),
+    new Error("等待 RPC 响应超时"), new Error("MQTT 连接断开"), new Error("MQTT client 未连接")]) {
+    let attempts = 0;
+    const delays = [];
+    const client = { async ackEvidencePackage(eventId, hash, options) {
+      assert.equal(eventId, completed.eventId);
+      assert.equal(hash, completed.packageSha256);
+      assert.ok(options.reqId > 0 && options.reqId < 2147483647);
+      if (++attempts < 4) throw error;
+      return { data: { code: 0 } };
+    } };
+    assert.deepEqual(await acknowledgeWithRetry(client, completed, { wait: async (ms) => delays.push(ms) }), { data: { code: 0 } });
+    assert.equal(attempts, 4);
+    assert.deepEqual(delays, [1000, 2000, 4000]);
+  }
+  for (const [error, expected] of [[new RpcError(1, 4, "busy"), 4], [new RpcError(1, 2, "invalid"), 1], [new Error("invalid hash"), 1]]) {
+    let attempts = 0;
+    await assert.rejects(acknowledgeWithRetry({ async ackEvidencePackage() { attempts += 1; throw error; } }, completed, { wait: async () => {} }), (actual) => actual === error);
+    assert.equal(attempts, expected);
+  }
+});
+
+test("stopping cancels an evidence ACK backoff without another RPC", async () => {
+  const { acknowledgeWithRetry } = require("../evidence_receiver");
+  const controller = new AbortController();
+  let attempts = 0;
+  const pending = acknowledgeWithRetry({ async ackEvidencePackage() {
+    attempts += 1;
+    throw new RpcError(1, 4, "busy");
+  } }, { eventId: "9001", packageSha256: "a".repeat(64) }, { signal: controller.signal });
+  await new Promise((resolve) => setImmediate(resolve));
+  controller.abort();
+  await assert.rejects(pending, { name: "AbortError" });
+  assert.equal(attempts, 1);
 });

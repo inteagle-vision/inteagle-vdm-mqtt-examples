@@ -22,6 +22,25 @@ from vdm_mqtt_sdk.codec import RPC_REQUEST_TYPES
 
 
 class VdmCodecTests(unittest.TestCase):
+    def test_displacement_arrays_use_public_dx_dy_dz_names(self) -> None:
+        telemetry = pb.Telemetry(schema_version=1)
+        target = telemetry.displacement.targets.add(target_id="T01")
+        target.dx.extend([0.125])
+        target.dy.extend([-0.5])
+        target.dz.extend([0.75])
+        topics = VdmTopics.for_device("DEMO001")
+        decoded = VdmCodec("protobuf").decode(
+            "vdm/DEMO001/telemetry", topics, telemetry.SerializeToString()
+        ).as_dict()
+        self.assertEqual(decoded["displacement"]["targets"][0], {
+            "targetId": "T01", "dx": [0.125], "dy": [-0.5], "dz": [0.75],
+        })
+        for name, number in [("dx", 3), ("dy", 4), ("dz", 9)]:
+            field = pb.TargetDisplacementSeries.DESCRIPTOR.fields_by_name[name]
+            self.assertEqual(field.number, number)
+            self.assertEqual(field.type, field.TYPE_FLOAT)
+            self.assertTrue(field.GetOptions().packed)
+
     def test_topics_reject_wildcards_and_map_suffixes(self) -> None:
         topics = VdmTopics.for_device("DEMO001")
         self.assertEqual(topics.rpc_request, "vdm/DEMO001/rpc/req")

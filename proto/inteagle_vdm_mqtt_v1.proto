@@ -103,13 +103,13 @@ message TargetList {
 
 // 单个标靶的一批客户位移数据。数组按采集顺序排列；设备只上报该型号实际支持
 // 的方向，不支持、未配置或当前没有数据的方向保持空数组。三个方向全部为空时，
-// 设备不添加该标靶。
+// 设备不添加该标靶。dx、dy、dz 的单位均为 mm。
 message TargetDisplacementSeries {
   string target_id = 1;
   reserved 2, 5 to 8;
-  repeated float dx_mm = 3 [packed = true];
-  repeated float dy_mm = 4 [packed = true];
-  repeated float dz_mm = 9 [packed = true];
+  repeated float dx = 3 [packed = true];
+  repeated float dy = 4 [packed = true];
+  repeated float dz = 9 [packed = true];
 }
 
 // 位移批次。非空方向数组使用同一采样时间网格，第 i 个样本的时间约为：
@@ -489,6 +489,24 @@ message QueryTelemetryRequest {
   repeated string target_ids = 3;
 }
 
+enum TelemetrySyncType {
+  TELEMETRY_SYNC_TYPE_UNSPECIFIED = 0;
+  TELEMETRY_SYNC_TYPE_DISPLACEMENT = 1;
+  TELEMETRY_SYNC_TYPE_ENVIRONMENT = 2;
+  TELEMETRY_SYNC_TYPE_DEVICE_STATUS = 3;
+}
+
+message SyncTelemetryRequest {
+  TelemetrySyncType telemetry_type = 1;
+  uint64 start_ts = 2;
+  uint64 end_ts = 3;
+  repeated string target_ids = 4;
+}
+
+message TelemetrySyncJobRequest {
+  string job_id = 1;
+}
+
 // uploadS3 在 vdm_api_docs 中尚未形成稳定的字段级契约。params 只保存文档已公开
 // 的对象，并受上方 DynamicObject 限制。将来新增强类型请求时必须使用新字段编号，
 // 不得直接改变本消息的含义。
@@ -711,6 +729,9 @@ message RpcRequest {
     ApplyAlarmRulesRequest apply_alarm_rules = 92;
     GetAlarmStateRequest get_alarm_state = 93;
     ListAlarmHistoryRequest list_alarm_history = 94;
+    SyncTelemetryRequest sync_telemetry = 95;
+    TelemetrySyncJobRequest get_sync_status = 96;
+    TelemetrySyncJobRequest cancel_sync = 97;
   }
 }
 
@@ -920,5 +941,8 @@ message RpcResponse {
     ApplyAlarmRulesResponse apply_alarm_rules = 92;
     GetAlarmStateResponse get_alarm_state = 93;
     ListAlarmHistoryResponse list_alarm_history = 94;
+    DynamicObjectResponse sync_telemetry = 95;
+    DynamicObjectResponse get_sync_status = 96;
+    DynamicObjectResponse cancel_sync = 97;
   }
 }

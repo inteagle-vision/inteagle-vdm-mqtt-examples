@@ -16,6 +16,7 @@ const client = new VdmMqttClient(
     topics,
     payloadFormat: "protobuf",
     qos: 1,
+    subscriptionSuffixes: ["telemetry", "attributes", "rpc/resp"],
   },
   onMessage,
 );

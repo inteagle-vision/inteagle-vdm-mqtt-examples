@@ -5,10 +5,35 @@ on:
   pull_request:
 
 jobs:
+  secret-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Scan current files and Git history for secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="8.30.1"
+          archive="gitleaks_${version}_linux_x64.tar.gz"
+          expected_sha256="551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+          install_dir="${RUNNER_TEMP}/gitleaks-${version}"
+          mkdir -p "${install_dir}"
+          curl --fail --location --silent --show-error \
+            --output "${install_dir}/${archive}" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${version}/${archive}"
+          echo "${expected_sha256}  ${install_dir}/${archive}" | sha256sum --check --strict
+          tar -xzf "${install_dir}/${archive}" -C "${install_dir}" gitleaks
+          "${install_dir}/gitleaks" git --redact=100 --no-banner .
+
   docker-compose:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - name: Verify Protobuf and JSON examples
-        run: ./run_demo.sh all
+        run: ./tests/run_smoke.sh all

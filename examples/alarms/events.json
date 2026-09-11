@@ -1,0 +1,206 @@
+[
+  {
+    "name": "triggered",
+    "json": {
+      "eventId": "9007199254740993",
+      "alarmId": "9007199254740900",
+      "ruleId": 12,
+      "type": "DISP_LIMIT",
+      "transition": "TRIGGERED",
+      "ts": 1734567890,
+      "detail": {
+        "targetId": "T01",
+        "metric": "DX",
+        "direction": "BIDIRECTIONAL",
+        "value": 6,
+        "limit": 5
+      },
+      "level": "ALERT"
+    },
+    "protobuf": {
+      "schemaVersion": 1,
+      "eventId": "9007199254740993",
+      "alarmId": "9007199254740900",
+      "ruleId": 12,
+      "alarmType": "ALARM_TYPE_DISPLACEMENT_LIMIT",
+      "transition": "ALARM_TRANSITION_TRIGGERED",
+      "timestampS": "1734567890",
+      "displacement": {
+        "targetId": "T01",
+        "metric": "ALARM_METRIC_DX",
+        "direction": "DISPLACEMENT_DIRECTION_BIDIRECTIONAL",
+        "valueMm": 6,
+        "limitMm": 5
+      },
+      "level": "ALARM_LEVEL_ALERT"
+    }
+  },
+  {
+    "name": "escalated",
+    "json": {
+      "eventId": "9007199254740994",
+      "alarmId": "9007199254740900",
+      "ruleId": 12,
+      "type": "DISP_LIMIT",
+      "transition": "ESCALATED",
+      "ts": 1734567895,
+      "detail": {
+        "targetId": "T01",
+        "metric": "DX",
+        "direction": "BIDIRECTIONAL",
+        "value": 16,
+        "limit": 15
+      },
+      "level": "ACTION"
+    },
+    "protobuf": {
+      "schemaVersion": 1,
+      "eventId": "9007199254740994",
+      "alarmId": "9007199254740900",
+      "ruleId": 12,
+      "alarmType": "ALARM_TYPE_DISPLACEMENT_LIMIT",
+      "transition": "ALARM_TRANSITION_ESCALATED",
+      "timestampS": "1734567895",
+      "displacement": {
+        "targetId": "T01",
+        "metric": "ALARM_METRIC_DX",
+        "direction": "DISPLACEMENT_DIRECTION_BIDIRECTIONAL",
+        "valueMm": 16,
+        "limitMm": 15
+      },
+      "level": "ALARM_LEVEL_ACTION"
+    }
+  },
+  {
+    "name": "deescalated",
+    "json": {
+      "eventId": "9007199254740995",
+      "alarmId": "9007199254740900",
+      "ruleId": 12,
+      "type": "DISP_LIMIT",
+      "transition": "DEESCALATED",
+      "ts": 1734567900,
+      "detail": {
+        "targetId": "T01",
+        "metric": "DX",
+        "direction": "BIDIRECTIONAL",
+        "value": 12,
+        "limit": 15
+      },
+      "level": "ALARM"
+    },
+    "protobuf": {
+      "schemaVersion": 1,
+      "eventId": "9007199254740995",
+      "alarmId": "9007199254740900",
+      "ruleId": 12,
+      "alarmType": "ALARM_TYPE_DISPLACEMENT_LIMIT",
+      "transition": "ALARM_TRANSITION_DEESCALATED",
+      "timestampS": "1734567900",
+      "displacement": {
+        "targetId": "T01",
+        "metric": "ALARM_METRIC_DX",
+        "direction": "DISPLACEMENT_DIRECTION_BIDIRECTIONAL",
+        "valueMm": 12,
+        "limitMm": 15
+      },
+      "level": "ALARM_LEVEL_ALARM"
+    }
+  },
+  {
+    "name": "synced",
+    "json": {
+      "eventId": "9007199254740996",
+      "alarmId": "9007199254740900",
+      "ruleId": 12,
+      "type": "DISP_LIMIT",
+      "transition": "SYNCED",
+      "ts": 1734567905,
+      "detail": {
+        "targetId": "T01",
+        "metric": "DX",
+        "direction": "BIDIRECTIONAL"
+      },
+      "level": "ALARM"
+    },
+    "protobuf": {
+      "schemaVersion": 1,
+      "eventId": "9007199254740996",
+      "alarmId": "9007199254740900",
+      "ruleId": 12,
+      "alarmType": "ALARM_TYPE_DISPLACEMENT_LIMIT",
+      "transition": "ALARM_TRANSITION_SYNCED",
+      "timestampS": "1734567905",
+      "displacement": {
+        "targetId": "T01",
+        "metric": "ALARM_METRIC_DX",
+        "direction": "DISPLACEMENT_DIRECTION_BIDIRECTIONAL"
+      },
+      "level": "ALARM_LEVEL_ALARM"
+    }
+  },
+  {
+    "name": "recovered",
+    "json": {
+      "eventId": "9007199254740997",
+      "alarmId": "9007199254740900",
+      "ruleId": 12,
+      "type": "DISP_LIMIT",
+      "transition": "RECOVERED",
+      "ts": 1734567910,
+      "detail": {
+        "targetId": "T01",
+        "metric": "DX",
+        "direction": "BIDIRECTIONAL",
+        "value": 4,
+        "limit": 10
+      }
+    },
+    "protobuf": {
+      "schemaVersion": 1,
+      "eventId": "9007199254740997",
+      "alarmId": "9007199254740900",
+      "ruleId": 12,
+      "alarmType": "ALARM_TYPE_DISPLACEMENT_LIMIT",
+      "transition": "ALARM_TRANSITION_RECOVERED",
+      "timestampS": "1734567910",
+      "displacement": {
+        "targetId": "T01",
+        "metric": "ALARM_METRIC_DX",
+        "direction": "DISPLACEMENT_DIRECTION_BIDIRECTIONAL",
+        "valueMm": 4,
+        "limitMm": 10
+      }
+    }
+  },
+  {
+    "name": "cancelled",
+    "json": {
+      "eventId": "9007199254740998",
+      "alarmId": "9007199254740901",
+      "ruleId": 12,
+      "type": "DISP_LIMIT",
+      "transition": "CANCELLED",
+      "ts": 1734567915,
+      "detail": {
+        "targetId": "T01",
+        "metric": "DX",
+        "direction": "BIDIRECTIONAL"
+      }
+    },
+    "protobuf": {
+      "schemaVersion": 1,
+      "eventId": "9007199254740998",
+      "alarmId": "9007199254740901",
+      "ruleId": 12,
+      "alarmType": "ALARM_TYPE_DISPLACEMENT_LIMIT",
+      "transition": "ALARM_TRANSITION_CANCELLED",
+      "timestampS": "1734567915",
+      "displacement": {
+        "targetId": "T01",
+        "metric": "ALARM_METRIC_DX",
+        "direction": "DISPLACEMENT_DIRECTION_BIDIRECTIONAL"
+      }
+    }
+  }
+]

@@ -113,6 +113,7 @@ export interface VdmMqttClientConfig {
   qos?: 0 | 1 | 2;
   connectTimeoutMs?: number;
   schemaPath?: string;
+  subscriptionSuffixes?: ReadonlyArray<"telemetry" | "attributes" | "event" | "3A" | "image" | "rpc/req" | "rpc/resp">;
 }
 
 export class RpcError extends Error {

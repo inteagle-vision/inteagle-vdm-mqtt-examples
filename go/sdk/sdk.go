@@ -3,6 +3,7 @@ package sdk
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -315,15 +316,17 @@ func (c Codec) EncodeRPC(method string, params any, reqID int32) ([]byte, string
 }
 
 type Config struct {
-	Host           string
-	Port           int
-	Topics         Topics
-	PayloadFormat  PayloadFormat
-	Username       string
-	Password       string
-	ClientID       string
-	QoS            byte
-	ConnectTimeout time.Duration
+	// Nil/empty preserves wildcard subscription; entries are public topic suffixes.
+	SubscriptionSuffixes []string
+	Host                 string
+	Port                 int
+	Topics               Topics
+	PayloadFormat        PayloadFormat
+	Username             string
+	Password             string
+	ClientID             string
+	QoS                  byte
+	ConnectTimeout       time.Duration
 }
 
 type MessageHandler func(*DecodedPayload)
@@ -339,16 +342,52 @@ type rpcResult struct {
 }
 
 type Client struct {
-	config    Config
-	codec     Codec
-	client    mqtt.Client
-	handler   MessageHandler
-	onError   ErrorHandler
-	ready     chan struct{}
-	readyOnce sync.Once
-	pending   map[int32]*pendingRPC
-	mu        sync.Mutex
-	nextReqID atomic.Int32
+	config     Config
+	codec      Codec
+	client     mqtt.Client
+	handler    MessageHandler
+	onError    ErrorHandler
+	ready      chan struct{}
+	readyError chan error
+	readyOnce  sync.Once
+	pending    map[int32]*pendingRPC
+	mu         sync.Mutex
+	nextReqID  atomic.Int32
+}
+
+func subscriptionTopics(config Config) (map[string]byte, error) {
+	topics := make(map[string]byte)
+	if len(config.SubscriptionSuffixes) == 0 {
+		topics[config.Topics.Wildcard()] = config.QoS
+		return topics, nil
+	}
+	for _, suffix := range config.SubscriptionSuffixes {
+		switch suffix {
+		case "telemetry", "attributes", "3A", "event", "image", "rpc/req", "rpc/resp":
+			topics[config.Topics.Topic(suffix)] = config.QoS
+		default:
+			return nil, fmt.Errorf("unsupported subscription suffix: %q", suffix)
+		}
+	}
+	return topics, nil
+}
+
+func validateSubscriptionResults(requested map[string]byte, granted map[string]byte) error {
+	for topic := range requested {
+		qos, exists := granted[topic]
+		if !exists || qos > 2 {
+			return fmt.Errorf("MQTT subscription rejected or missing from SUBACK: %s", topic)
+		}
+	}
+	return nil
+}
+
+func (c *Client) failReady(err error) {
+	c.report(err)
+	select {
+	case c.readyError <- err:
+	default:
+	}
 }
 
 func NewClient(config Config, handler MessageHandler, onError ErrorHandler) (*Client, error) {
@@ -363,6 +402,10 @@ func NewClient(config Config, handler MessageHandler, onError ErrorHandler) (*Cl
 		return nil, err
 	}
 	config.Topics = normalizedTopics
+	subscriptions, err := subscriptionTopics(config)
+	if err != nil {
+		return nil, err
+	}
 	if config.ConnectTimeout <= 0 {
 		config.ConnectTimeout = 10 * time.Second
 	}
@@ -375,9 +418,15 @@ func NewClient(config Config, handler MessageHandler, onError ErrorHandler) (*Cl
 	}
 	result := &Client{
 		config: config, codec: codec, handler: handler, onError: onError,
-		ready: make(chan struct{}), pending: make(map[int32]*pendingRPC),
+		ready: make(chan struct{}), readyError: make(chan error, 1), pending: make(map[int32]*pendingRPC),
 	}
-	result.nextReqID.Store(0)
+	// Responses share one device topic across clients. Avoid every fresh
+	// receiver using request ID 1 for its first concurrent call.
+	var requestSeed [4]byte
+	if _, err := rand.Read(requestSeed[:]); err != nil {
+		return nil, fmt.Errorf("initialize request IDs: %w", err)
+	}
+	result.nextReqID.Store(int32(binary.BigEndian.Uint32(requestSeed[:]) & 0x7fffffff))
 	options := mqtt.NewClientOptions().
 		AddBroker(fmt.Sprintf("tcp://%s:%d", config.Host, config.Port)).
 		SetClientID(config.ClientID).
@@ -385,19 +434,28 @@ func NewClient(config Config, handler MessageHandler, onError ErrorHandler) (*Cl
 		SetAutoReconnect(true).
 		SetConnectTimeout(2 * time.Second).
 		SetOnConnectHandler(func(client mqtt.Client) {
-			token := client.Subscribe(config.Topics.Wildcard(), config.QoS, result.onMessage)
+			token := client.SubscribeMultiple(subscriptions, result.onMessage)
 			if !token.WaitTimeout(5 * time.Second) {
-				result.report(errors.New("订阅 VDM Topic ACK 超时"))
+				result.failReady(errors.New("订阅 VDM Topic ACK 超时"))
 				return
 			}
 			if token.Error() != nil {
-				result.report(fmt.Errorf("订阅 VDM Topic 失败: %w", token.Error()))
+				result.failReady(fmt.Errorf("订阅 VDM Topic 失败: %w", token.Error()))
+				return
+			}
+			subscriptionToken, ok := token.(*mqtt.SubscribeToken)
+			if !ok {
+				result.failReady(errors.New("MQTT subscribe token has no SUBACK results"))
+				return
+			}
+			if err := validateSubscriptionResults(subscriptions, subscriptionToken.Result()); err != nil {
+				result.failReady(err)
 				return
 			}
 			result.readyOnce.Do(func() { close(result.ready) })
 		}).
 		SetConnectionLostHandler(func(_ mqtt.Client, err error) {
-			result.failPending(fmt.Errorf("MQTT 连接断开: %w", err))
+			result.failPending(&TransportError{Err: fmt.Errorf("MQTT 连接断开: %w", err)})
 			result.report(err)
 		})
 	if config.Username != "" {
@@ -427,6 +485,8 @@ func (c *Client) Start(ctx context.Context) error {
 	select {
 	case <-c.ready:
 		return nil
+	case err := <-c.readyError:
+		return err
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-time.After(c.config.ConnectTimeout):
@@ -442,10 +502,22 @@ func (c *Client) Close() {
 func (c *Client) PublishRaw(topic string, payload any, retained bool) error {
 	token := c.client.Publish(topic, c.config.QoS, retained, payload)
 	if !token.WaitTimeout(5 * time.Second) {
-		return fmt.Errorf("MQTT publish ACK 超时: %s", topic)
+		return &TransportError{Err: fmt.Errorf("MQTT publish ACK 超时: %s: %w", topic, context.DeadlineExceeded)}
 	}
-	return token.Error()
+	if err := token.Error(); err != nil {
+		return &TransportError{Err: err}
+	}
+	return nil
 }
+
+// TransportError identifies a failed MQTT transmission or a lost connection.
+// Callers may retry idempotent operations after reconnecting.
+type TransportError struct {
+	Err error
+}
+
+func (e *TransportError) Error() string { return e.Err.Error() }
+func (e *TransportError) Unwrap() error { return e.Err }
 
 type RPCError struct {
 	ReqID   int32

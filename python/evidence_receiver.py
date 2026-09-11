@@ -1,83 +1,126 @@
 #!/usr/bin/env python3
-"""接收、校验并确认 StdMqtt 告警抓拍图像。"""
-
-from __future__ import annotations
+"""Receive, persist, verify, and acknowledge device alarm snapshot packages."""
 
 import os
+import queue
+import signal
+import sys
 import threading
-import time
+from collections import OrderedDict
 
 from vdm_mqtt_sdk import (
     AlarmSnapshotPackageAssembler,
     EvidencePackageChunk,
+    RpcError,
     VdmMqttClient,
     VdmMqttClientConfig,
     VdmTopics,
 )
 
 
-def setting(name: str, default: str) -> str:
-    return os.getenv(name, default)
+def acknowledge_with_retry(client, completed, stopped):
+    for attempt in range(4):
+        try:
+            client.ack_evidence_package(completed.event_id, completed.package_sha256)
+            return True
+        except Exception as error:
+            transient = (isinstance(error, RpcError) and error.code in (4, 5)) or isinstance(error, (TimeoutError, ConnectionError))
+            if not transient or attempt == 3:
+                raise
+            print(f"ACK_RETRY eventId={completed.event_id} attempt={attempt + 2}", flush=True)
+            if stopped.wait(2 ** attempt):
+                return False
+    return False
 
 
-assembler = AlarmSnapshotPackageAssembler(setting("VDM_EVIDENCE_DIR", "./evidence"))
-client: VdmMqttClient
+def main():
+    for name in ("MQTT_HOST", "VDM_DEVICE_ID"):
+        if not os.getenv(name):
+            raise ValueError(f"Set {name}")
+    assembler = AlarmSnapshotPackageAssembler(os.getenv("VDM_EVIDENCE_DIR", "./evidence"))
+    chunks = queue.Queue(maxsize=64)
+    confirmations = queue.Queue(maxsize=16)
+    stopped = threading.Event()
 
+    def report(error):
+        print("ERROR", error, file=sys.stderr, flush=True)
 
-def acknowledge(event_id: int, package_sha256: str) -> None:
-    try:
-        response = client.ack_evidence_package(event_id, package_sha256)
-        print(
-            f"ACKED eventId={event_id} packageSha256={package_sha256} "
-            f"response={response.as_dict()}",
-            flush=True,
-        )
-    except Exception as error:
-        print(f"ACK_FAILED eventId={event_id} error={error}", flush=True)
+    def on_message(message):
+        if isinstance(message.value, EvidencePackageChunk):
+            try:
+                chunks.put_nowait(message.value)
+            except queue.Full:
+                report("Image queue full; use retryEvidence to resend the incomplete package")
 
-
-def on_message(message) -> None:
-    if not isinstance(message.value, EvidencePackageChunk):
-        return
-    completed = assembler.accept(message.value)
-    print(
-        f"CHUNK eventId={message.value.event_id} chunk={message.value.chunk_index + 1}/"
-        f"{message.value.chunk_count}",
-        flush=True,
-    )
-    if completed is not None:
-        print(
-            f"VERIFIED eventId={completed.event_id} package={completed.package_path}",
-            flush=True,
-        )
-        # Paho 的 on_message 在线程内执行；RPC 必须换线程等待响应，避免阻塞网络循环。
-        threading.Thread(
-            target=acknowledge,
-            args=(completed.event_id, completed.package_sha256),
-            daemon=True,
-        ).start()
-
-
-client = VdmMqttClient(
-    VdmMqttClientConfig(
-        host=setting("MQTT_HOST", "127.0.0.1"),
-        port=int(setting("MQTT_PORT", "1883")),
-        topics=VdmTopics.for_device(setting("VDM_DEVICE_ID", "DEMO001")),
-        payload_format=setting("VDM_PAYLOAD_FORMAT", "json"),
+    config = VdmMqttClientConfig(
+        host=os.environ["MQTT_HOST"],
+        port=int(os.getenv("MQTT_PORT", "1883")),
+        topics=VdmTopics.for_device(os.environ["VDM_DEVICE_ID"]),
+        payload_format=os.getenv("VDM_PAYLOAD_FORMAT", "protobuf"),
         username=os.getenv("MQTT_USERNAME"),
         password=os.getenv("MQTT_PASSWORD"),
         qos=1,
-    ),
-    on_message=on_message,
-    on_error=lambda error: print(f"ERROR {error}", flush=True),
-)
+        subscription_suffixes=("image", "rpc/resp"),
+    )
+    with VdmMqttClient(config, on_message=on_message, on_error=report) as client:
+        def persist():
+            while not stopped.is_set():
+                try:
+                    chunk = chunks.get(timeout=0.2)
+                except queue.Empty:
+                    continue
+                try:
+                    completed = assembler.accept(chunk)
+                    print(f"CHUNK eventId={chunk.event_id} chunk={chunk.chunk_index + 1}/{chunk.chunk_count}", flush=True)
+                    if completed is not None:
+                        print(f"VERIFIED eventId={completed.event_id} package={completed.package_path}", flush=True)
+                        confirmations.put_nowait(completed)
+                except queue.Full:
+                    report("ACK queue full; use retryEvidence to request confirmation again")
+                except Exception as error:
+                    report(error)
+
+        def acknowledge():
+            acknowledged = OrderedDict()
+            while not stopped.is_set():
+                try:
+                    completed = confirmations.get(timeout=0.2)
+                except queue.Empty:
+                    continue
+                key = (completed.event_id, completed.package_sha256)
+                if key in acknowledged:
+                    continue
+                try:
+                    if not acknowledge_with_retry(client, completed, stopped):
+                        continue
+                    acknowledged[key] = True
+                    if len(acknowledged) > 256:
+                        acknowledged.popitem(last=False)
+                    print(f"ACKED eventId={completed.event_id} packageSha256={completed.package_sha256} code=0", flush=True)
+                except Exception as error:
+                    print(f"ACK_FAILED eventId={completed.event_id} error={error}", file=sys.stderr, flush=True)
+
+        workers = [threading.Thread(target=f, daemon=True) for f in (persist, acknowledge)]
+        for worker in workers:
+            worker.start()
+        print("READY evidence receiver; Ctrl-C to stop", flush=True)
+        try:
+            stopped.wait()
+        finally:
+            stopped.set()
+            client.stop()
+            for worker in workers:
+                worker.join(timeout=2)
 
 
 if __name__ == "__main__":
-    client.start()
-    print("READY evidence receiver", flush=True)
+    def terminate(_signal, _frame):
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, terminate)
     try:
-        while True:
-            time.sleep(3600)
+        main()
     except KeyboardInterrupt:
-        client.stop()
+        pass
+    except Exception as error:
+        print("ERROR", error, file=sys.stderr)
+        sys.exit(1)

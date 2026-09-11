@@ -1,12 +1,12 @@
-name: inteagle-vdm-mqtt-examples
+name: inteagle-vdm-live
 
-x-example-environment: &example-environment
-  MQTT_HOST: nanomq
-  MQTT_PORT: "1883"
-  VDM_BASE_TOPIC: vdm/DEMO001
+x-device-environment: &device-environment
+  MQTT_HOST: ${MQTT_HOST:-nanomq}
+  MQTT_PORT: ${MQTT_PORT:-1883}
+  MQTT_USERNAME:
+  MQTT_PASSWORD:
+  VDM_DEVICE_ID: ${VDM_DEVICE_ID:-}
   VDM_PAYLOAD_FORMAT: ${VDM_PAYLOAD_FORMAT:-protobuf}
-  VDM_RUN_ID: ${VDM_RUN_ID:-manual}
-  VDM_WAIT_TIMEOUT: ${VDM_WAIT_TIMEOUT:-45}
 
 services:
   nanomq:
@@ -15,63 +15,84 @@ services:
       - "${NANOMQ_BIND_ADDRESS:-127.0.0.1}:${NANOMQ_PORT:-18883}:1883"
     restart: unless-stopped
 
-  python-consumer:
+  python-data: &python-service
+    image: inteagle-vdm-python:local
     build:
       context: .
       dockerfile: python/Dockerfile
-    command: ["python", "consumer.py"]
-    environment:
-      <<: *example-environment
-      VDM_CONSUMER_NAME: python
-    depends_on:
-      - nanomq
-    restart: "no"
+    entrypoint: ["python", "/app/receive_data.py"]
+    command: []
+    environment: *device-environment
+    depends_on: [nanomq]
 
-  go-consumer:
+  go-data: &go-service
+    image: inteagle-vdm-go:local
     build:
       context: .
       dockerfile: go/Dockerfile
-    environment:
-      <<: *example-environment
-      VDM_CONSUMER_NAME: go
-    depends_on:
-      - nanomq
-    restart: "no"
+    entrypoint: ["/vdm-receive-data"]
+    command: []
+    environment: *device-environment
+    depends_on: [nanomq]
 
-  java-consumer:
+  java-data: &java-service
+    image: inteagle-vdm-java:local
     build:
       context: .
       dockerfile: java/Dockerfile
-    environment:
-      <<: *example-environment
-      VDM_CONSUMER_NAME: java
-    depends_on:
-      - nanomq
-    restart: "no"
+    entrypoint: ["java", "-cp", "/app/vdm-mqtt-consumer.jar", "com.inteagle.examples.vdm.ReceiveData"]
+    command: []
+    environment: *device-environment
+    depends_on: [nanomq]
 
-  javascript-consumer:
+  javascript-data: &javascript-service
+    image: inteagle-vdm-javascript:local
     build:
       context: .
       dockerfile: javascript/Dockerfile
-    environment:
-      <<: *example-environment
-      VDM_CONSUMER_NAME: javascript
-    depends_on:
-      - nanomq
-    restart: "no"
+    entrypoint: ["node", "receive_data.js"]
+    command: []
+    environment: *device-environment
+    depends_on: [nanomq]
 
-  publisher:
-    build:
-      context: .
-      dockerfile: python/Dockerfile
-    command: ["python", "publisher.py"]
+  python-evidence:
+    <<: *python-service
+    profiles: [evidence]
+    entrypoint: ["python", "/app/evidence_receiver.py"]
     environment:
-      <<: *example-environment
-      VDM_REQUIRED_CONSUMERS: python,go,java,javascript
-    depends_on:
-      - nanomq
-      - python-consumer
-      - go-consumer
-      - java-consumer
-      - javascript-consumer
-    restart: "no"
+      <<: *device-environment
+      VDM_EVIDENCE_DIR: /data/evidence
+    volumes: [python-evidence:/data/evidence]
+
+  go-evidence:
+    <<: *go-service
+    profiles: [evidence]
+    entrypoint: ["/vdm-evidence-receiver"]
+    environment:
+      <<: *device-environment
+      VDM_EVIDENCE_DIR: /data/evidence
+    volumes: [go-evidence:/data/evidence]
+
+  java-evidence:
+    <<: *java-service
+    profiles: [evidence]
+    entrypoint: ["java", "-cp", "/app/vdm-mqtt-consumer.jar", "com.inteagle.examples.vdm.EvidenceReceiver"]
+    environment:
+      <<: *device-environment
+      VDM_EVIDENCE_DIR: /data/evidence
+    volumes: [java-evidence:/data/evidence]
+
+  javascript-evidence:
+    <<: *javascript-service
+    profiles: [evidence]
+    entrypoint: ["node", "evidence_receiver.js"]
+    environment:
+      <<: *device-environment
+      VDM_EVIDENCE_DIR: /data/evidence
+    volumes: [javascript-evidence:/data/evidence]
+
+volumes:
+  python-evidence:
+  go-evidence:
+  java-evidence:
+  javascript-evidence:

@@ -1,5 +1,19 @@
 .idea/
 .vscode/
+.env
+.env.*
+!.env.example
+credentials/
+secrets/
+*.token
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+id_rsa*
+id_ed25519*
 __pycache__/
 *.py[cod]
 python/inteagle_vdm_mqtt_v1_pb2.py
@@ -9,3 +23,6 @@ target/
 bin/
 go/generated/
 .DS_Store
+
+# Captures received from real devices
+/evidence/

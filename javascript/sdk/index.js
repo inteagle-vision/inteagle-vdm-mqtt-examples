@@ -1,9 +1,79 @@
 "use strict";
 
 const path = require("node:path");
+const crypto = require("node:crypto");
 const mqtt = require("mqtt");
 const protobuf = require("protobufjs");
 const { AlarmSnapshotPackageAssembler } = require("./snapshot-package");
+
+// fromObject supports ProtoJSON enum names and decimal uint64 strings. Validate
+// first: protobufjs otherwise silently drops unknown fields/enum names, which
+// can turn a misspelled alarm rule into a different request.
+function validateProtoObject(type, object, location = type.name) {
+  if (object === null || Array.isArray(object) || typeof object !== "object") {
+    throw new Error(`${location} must be an object`);
+  }
+  for (const oneof of type.oneofsArray) {
+    if (oneof.oneof.filter((name) => object[name] != null).length > 1) {
+      throw new Error(`${location}.${oneof.name}: multiple oneof fields`);
+    }
+  }
+  for (const [name, value] of Object.entries(object)) {
+    const field = type.fields[name];
+    if (!field) throw new Error(`${location}: unknown field ${name}`);
+    if (value == null) continue; // ProtoJSON null means absent.
+    field.resolve();
+    if (field.repeated && !Array.isArray(value)) {
+      throw new Error(`${location}.${name} must be an array`);
+    }
+    if (field.map && (Array.isArray(value) || typeof value !== "object")) {
+      throw new Error(`${location}.${name} must be an object`);
+    }
+    const values = field.map ? Object.values(value) : field.repeated ? value : [value];
+    for (const item of values) {
+      if (field.resolvedType instanceof protobuf.Type) {
+        validateProtoObject(field.resolvedType, item, `${location}.${name}`);
+      } else if (field.resolvedType instanceof protobuf.Enum) {
+        const enums = field.resolvedType.values;
+        if (!(typeof item === "string" && Object.hasOwn(enums, item))
+            && !(Number.isInteger(item) && Object.values(enums).includes(item))) {
+          throw new Error(`${location}.${name}: invalid enum ${item}`);
+        }
+      } else if (/^(u?int|sint|fixed|sfixed)64$/.test(field.type)) {
+        if (typeof item === "number" && !Number.isSafeInteger(item)) {
+          throw new Error(`${location}.${name}: use a decimal string for 64-bit integers`);
+        }
+        const decimal = protobuf.util.Long?.isLong(item) ? item.toString() : item;
+        if (!(typeof decimal === "number" && Number.isSafeInteger(decimal))
+            && !(typeof decimal === "string" && /^-?[0-9]+$/.test(decimal))) {
+          throw new Error(`${location}.${name}: expected a decimal 64-bit integer`);
+        }
+        const integer = BigInt(decimal);
+        const unsigned = ["uint64", "fixed64"].includes(field.type);
+        const min = unsigned ? 0n : -(1n << 63n);
+        const max = unsigned ? (1n << 64n) - 1n : (1n << 63n) - 1n;
+        if (integer < min || integer > max) {
+          throw new Error(`${location}.${name}: 64-bit integer out of range`);
+        }
+      } else if (/^(u?int|sint|fixed|sfixed)32$/.test(field.type)) {
+        const unsigned = ["uint32", "fixed32"].includes(field.type);
+        const min = unsigned ? 0 : -(2 ** 31);
+        const max = unsigned ? 2 ** 32 - 1 : 2 ** 31 - 1;
+        if (!Number.isInteger(item) || item < min || item > max) {
+          throw new Error(`${location}.${name}: expected a 32-bit integer in range`);
+        }
+      } else if (field.type === "bool" && typeof item !== "boolean") {
+        throw new Error(`${location}.${name}: expected a boolean`);
+      } else if (field.type === "string" && typeof item !== "string") {
+        throw new Error(`${location}.${name}: expected a string`);
+      } else if (["float", "double"].includes(field.type)
+          && (typeof item !== "number" || !Number.isFinite(item)
+              || (field.type === "float" && !Number.isFinite(Math.fround(item))))) {
+        throw new Error(`${location}.${name}: expected a finite ${field.type}`);
+      }
+    }
+  }
+}
 
 const SCHEMA_VERSION = 1;
 
@@ -217,12 +287,14 @@ class VdmCodec {
       reqId,
       [expectedResponseField]: params,
     };
-    const error = this.rpcRequestType.verify(object);
+    validateProtoObject(this.rpcRequestType, object);
+    const message = this.rpcRequestType.fromObject(object);
+    const error = this.rpcRequestType.verify(message);
     if (error) {
       throw new Error(`${method} Protobuf 参数不合法: ${error}`);
     }
     return {
-      payload: Buffer.from(this.rpcRequestType.encode(this.rpcRequestType.create(object)).finish()),
+      payload: Buffer.from(this.rpcRequestType.encode(message).finish()),
       expectedResponseField,
     };
   }
@@ -352,8 +424,15 @@ class VdmMqttClient {
     if (![0, 1, 2].includes(qos)) {
       throw new Error("MQTT qos 必须是 0、1 或 2");
     }
+    const supportedSuffixes = new Set(["telemetry", "attributes", "event", "3A", "image", "rpc/req", "rpc/resp"]);
+    if (config.subscriptionSuffixes != null
+        && (!Array.isArray(config.subscriptionSuffixes) || config.subscriptionSuffixes.length === 0
+            || config.subscriptionSuffixes.some((suffix) => !supportedSuffixes.has(suffix)))) {
+      throw new Error("subscriptionSuffixes 必须包含有效的 VDM Topic 后缀");
+    }
     this.config = {
       ...config,
+      subscriptionSuffixes: config.subscriptionSuffixes == null ? null : [...config.subscriptionSuffixes],
       qos,
       payloadFormat: parsePayloadFormat(config.payloadFormat),
       connectTimeoutMs: config.connectTimeoutMs ?? 10_000,
@@ -364,7 +443,7 @@ class VdmMqttClient {
     this.onError = onError;
     this.client = null;
     this.pending = new Map();
-    this.nextReqId = 0;
+    this.nextReqId = crypto.randomInt(1, 2147483647);
     this.started = false;
     this.stopping = false;
   }
@@ -419,11 +498,21 @@ class VdmMqttClient {
   }
 
   async subscribe() {
+    const topics = this.config.subscriptionSuffixes?.map((suffix) => this.config.topics.topic(suffix))
+      ?? this.config.topics.wildcard;
+    const expected = Array.isArray(topics) ? topics.length : 1;
     await new Promise((resolve, reject) => {
       this.client.subscribe(
-        this.config.topics.wildcard,
+        topics,
         { qos: this.config.qos },
-        (error) => (error ? reject(error) : resolve()),
+        (error, granted) => {
+          if (error) return reject(error);
+          if (!Array.isArray(granted) || granted.length !== expected
+            || granted.some(({ qos }) => ![0, 1, 2].includes(qos))) {
+            return reject(new Error("MQTT Broker 未确认全部订阅"));
+          }
+          resolve();
+        },
       );
     });
   }

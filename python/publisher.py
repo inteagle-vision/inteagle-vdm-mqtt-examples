@@ -69,8 +69,8 @@ def protobuf_fixtures() -> list[tuple[str, bytes]]:
     telemetry.displacement.sample_frequency_hz = 20
     telemetry.displacement.first_sample_timestamp_ms = TIMESTAMP_S * 1000
     target = telemetry.displacement.targets.add(target_id="T01")
-    target.dx_mm.extend((0.125, 0.25, 0.375))
-    target.dy_mm.extend((-0.5, -0.625, -0.75))
+    target.dx.extend((0.125, 0.25, 0.375))
+    target.dy.extend((-0.5, -0.625, -0.75))
 
     attributes = pb.Attributes(
         schema_version=1,
@@ -159,8 +159,8 @@ def json_fixtures() -> list[tuple[str, bytes]]:
                     "deviceId": "DEMO001",
                     "deviceModel": "X1",
                     "fwVer": "example-1.0.0",
-                    "status": "idle",
-                    "sampleFrequency": 20,
+                    "measureStatus": "Idle",
+                    "sampleFreq": 20,
                 }
             ),
         ),

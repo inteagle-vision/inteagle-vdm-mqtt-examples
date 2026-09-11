@@ -6,9 +6,10 @@ RUN npm ci --include=dev --ignore-scripts
 
 COPY proto /app/proto
 COPY javascript/sdk ./sdk
+COPY examples /app/examples
 COPY javascript/tests ./tests
 COPY javascript/tsconfig.json ./tsconfig.json
-COPY javascript/consumer.js ./consumer.js
+COPY javascript/consumer.js javascript/alarm_rpc.js javascript/receive_data.js javascript/evidence_receiver.js ./
 RUN npm run check \
     && npm prune --omit=dev
 

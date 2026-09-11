@@ -1,6 +1,6 @@
 package com.inteagle.vdm.mqtt.sdk;
 
-/** 类型 2 StdMqtt 告警抓拍图像 USTAR 包分块。 */
+/** 类型 2 MQTT 告警抓拍图像 USTAR 包分块。 */
 public record EvidencePackageChunk(
     int messageType,
     int headerLength,

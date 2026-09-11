@@ -1,6 +1,9 @@
 package com.inteagle.vdm.mqtt.sdk;
 
+import java.security.SecureRandom;
 import java.time.Duration;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
@@ -21,7 +24,7 @@ import org.eclipse.paho.client.mqttv3.MqttException;
 import org.eclipse.paho.client.mqttv3.MqttMessage;
 
 /**
- * 客户云侧 VDM MQTT SDK 客户端。
+ * 系统集成商平台使用的 VDM MQTT SDK 客户端。
  *
  * <p>每个实例只绑定一个设备 Topic 和一张 RPC pending 表。不同设备或不同云连接必须创建
  * 独立实例，因此一个连接上的 RPC 响应不会被另一个连接消费。
@@ -36,13 +39,30 @@ public final class VdmMqttClient implements AutoCloseable, MqttCallbackExtended 
       String password,
       String clientId,
       int qos,
-      Duration connectTimeout) {
+      Duration connectTimeout,
+      List<String> subscriptionSuffixes) {
+    /** Preserve the original constructor and its full-device subscription. */
+    public Config(
+        String host, int port, VdmTopics topics, PayloadFormat payloadFormat,
+        String username, String password, String clientId, int qos, Duration connectTimeout) {
+      this(host, port, topics, payloadFormat, username, password, clientId, qos,
+          connectTimeout, null);
+    }
+
     public Config {
       if (host == null || host.isBlank() || port < 1 || port > 65535) {
         throw new IllegalArgumentException("MQTT host/port 无效");
       }
       Objects.requireNonNull(topics, "topics");
       Objects.requireNonNull(payloadFormat, "payloadFormat");
+      subscriptionSuffixes = subscriptionSuffixes == null
+          ? List.of("#") : List.copyOf(subscriptionSuffixes);
+      if (subscriptionSuffixes.isEmpty()
+          || subscriptionSuffixes.stream().anyMatch(suffix -> !List.of(
+              "#", "telemetry", "attributes", "event", "3A", "image", "rpc/req", "rpc/resp")
+              .contains(suffix))) {
+        throw new IllegalArgumentException("subscriptionSuffixes contains an unsupported Topic");
+      }
       if (qos < 0 || qos > 2) {
         throw new IllegalArgumentException("MQTT qos 必须是 0、1 或 2");
       }
@@ -64,8 +84,12 @@ public final class VdmMqttClient implements AutoCloseable, MqttCallbackExtended 
   private final MqttAsyncClient client;
   private final MqttConnectOptions connectOptions;
   private final ConcurrentHashMap<Integer, Pending> pending = new ConcurrentHashMap<>();
-  private final AtomicInteger reqIds = new AtomicInteger();
+  // Clients for the same device share an RPC response Topic. Randomize the
+  // starting point so concurrently running language examples do not all use 1.
+  private final AtomicInteger reqIds =
+      new AtomicInteger(new SecureRandom().nextInt(1, Integer.MAX_VALUE));
   private volatile CountDownLatch subscribed = new CountDownLatch(1);
+  private volatile Throwable subscriptionError;
   private volatile boolean closing;
 
   public VdmMqttClient(
@@ -110,7 +134,10 @@ public final class VdmMqttClient implements AutoCloseable, MqttCallbackExtended 
     }
     long remainingMs = Math.max(1, TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime()));
     if (!subscribed.await(remainingMs, TimeUnit.MILLISECONDS)) {
-      throw new TimeoutException("订阅 VDM Topic 超时: " + config.topics().wildcard());
+      throw new TimeoutException("订阅 VDM Topic 超时: " + config.subscriptionSuffixes());
+    }
+    if (subscriptionError != null) {
+      throw new IllegalStateException("订阅 VDM Topic 失败", subscriptionError);
     }
   }
 
@@ -132,6 +159,10 @@ public final class VdmMqttClient implements AutoCloseable, MqttCallbackExtended 
       int reqId,
       Duration timeout,
       boolean allowError) throws Exception {
+    if (!config.subscriptionSuffixes().contains("#")
+        && !config.subscriptionSuffixes().contains("rpc/resp")) {
+      throw new IllegalStateException("RPC requires the rpc/resp subscription");
+    }
     int id = reqId == 0 ? nextReqId() : reqId;
     VdmCodec.RpcEncoding encoding = codec.encodeRpcRequest(method, params, id);
     Pending call = new Pending(encoding.expectedResponseField(), new CompletableFuture<>());
@@ -220,22 +251,37 @@ public final class VdmMqttClient implements AutoCloseable, MqttCallbackExtended 
 
   @Override
   public void connectComplete(boolean reconnect, String serverURI) {
+    subscriptionError = null;
     if (reconnect) {
       subscribed = new CountDownLatch(1);
     }
     try {
-      client.subscribe(config.topics().wildcard(), config.qos(), null, new IMqttActionListener() {
+      String[] topics = config.subscriptionSuffixes().stream()
+          .map(config.topics()::topic).toArray(String[]::new);
+      int[] qos = new int[topics.length];
+      Arrays.fill(qos, config.qos());
+      client.subscribe(topics, qos, null, new IMqttActionListener() {
         @Override
         public void onSuccess(IMqttToken asyncActionToken) {
+          int[] granted = asyncActionToken.getGrantedQos();
+          if (granted == null || granted.length != topics.length
+              || Arrays.stream(granted).anyMatch(value -> value < 0 || value > 2)) {
+            subscriptionError = new IllegalStateException("MQTT Broker 拒绝 Topic 订阅");
+            report(subscriptionError);
+          }
           subscribed.countDown();
         }
 
         @Override
         public void onFailure(IMqttToken asyncActionToken, Throwable exception) {
-          report(new IllegalStateException("订阅 VDM Topic 失败", exception));
+          subscriptionError = new IllegalStateException("订阅 VDM Topic 失败", exception);
+          subscribed.countDown();
+          report(subscriptionError);
         }
       });
     } catch (MqttException exception) {
+      subscriptionError = exception;
+      subscribed.countDown();
       report(exception);
     }
   }

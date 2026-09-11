@@ -1,0 +1,398 @@
+[
+  {
+    "name": "capabilities",
+    "method": "getAlarmCaps",
+    "json": {},
+    "protobuf": {}
+  },
+  {
+    "name": "list-rules",
+    "method": "listAlarmRules",
+    "json": {},
+    "protobuf": {}
+  },
+  {
+    "name": "active-state",
+    "method": "getAlarmState",
+    "json": {},
+    "protobuf": {}
+  },
+  {
+    "name": "history",
+    "method": "listAlarmHistory",
+    "json": {
+      "limit": 20
+    },
+    "protobuf": {
+      "limit": 20
+    }
+  },
+  {
+    "name": "incident-history",
+    "method": "listAlarmHistory",
+    "json": {
+      "alarmId": "9007199254740993"
+    },
+    "protobuf": {
+      "alarmId": "9007199254740993"
+    }
+  },
+  {
+    "name": "create-displacement",
+    "method": "applyAlarmRules",
+    "json": {
+      "upsert": [
+        {
+          "name": "X displacement",
+          "enabled": false,
+          "type": "DISP_LIMIT",
+          "targetIds": [
+            "T01"
+          ],
+          "metric": "DX",
+          "direction": "BIDIRECTIONAL",
+          "levels": {
+            "ALERT": {
+              "enter": 5,
+              "enterForMs": 1000
+            },
+            "ALARM": {
+              "enter": 10,
+              "enterForMs": 1000
+            },
+            "ACTION": {
+              "enter": 15,
+              "enterForMs": 1000
+            }
+          },
+          "recoverForMs": 2000
+        }
+      ]
+    },
+    "protobuf": {
+      "upsert": [
+        {
+          "displacementLimit": {
+            "common": {
+              "name": "X displacement",
+              "enabled": false
+            },
+            "targetIds": [
+              "T01"
+            ],
+            "metric": "ALARM_METRIC_DX",
+            "direction": "DISPLACEMENT_DIRECTION_BIDIRECTIONAL",
+            "levels": {
+              "alert": {
+                "enter": 5,
+                "enterForMs": 1000
+              },
+              "alarm": {
+                "enter": 10,
+                "enterForMs": 1000
+              },
+              "action": {
+                "enter": 15,
+                "enterForMs": 1000
+              }
+            },
+            "recoverForMs": 2000
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "create-rate",
+    "method": "applyAlarmRules",
+    "json": {
+      "upsert": [
+        {
+          "name": "X rate",
+          "enabled": false,
+          "type": "DISP_RATE",
+          "targetIds": [
+            "T01"
+          ],
+          "metric": "DX",
+          "direction": "NEGATIVE",
+          "windowMs": 3000,
+          "levels": {
+            "ALARM": {
+              "enter": 2,
+              "enterForMs": 1000
+            }
+          },
+          "recoverForMs": 2000
+        }
+      ]
+    },
+    "protobuf": {
+      "upsert": [
+        {
+          "displacementRate": {
+            "common": {
+              "name": "X rate",
+              "enabled": false
+            },
+            "targetIds": [
+              "T01"
+            ],
+            "metric": "ALARM_METRIC_DX",
+            "direction": "DISPLACEMENT_DIRECTION_NEGATIVE",
+            "windowMs": 3000,
+            "levels": {
+              "alarm": {
+                "enter": 2,
+                "enterForMs": 1000
+              }
+            },
+            "recoverForMs": 2000
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "create-target-lost",
+    "method": "applyAlarmRules",
+    "json": {
+      "upsert": [
+        {
+          "name": "Target visibility",
+          "enabled": false,
+          "type": "TARGET_LOST",
+          "targetIds": [
+            "T01"
+          ],
+          "levels": {
+            "ALERT": {
+              "lostForMs": 10000
+            },
+            "ALARM": {
+              "lostForMs": 20000
+            },
+            "ACTION": {
+              "lostForMs": 30000
+            }
+          },
+          "recoverForMs": 5000,
+          "actions": [
+            {
+              "type": "SNAPSHOT",
+              "levels": [
+                "ALARM",
+                "ACTION"
+              ],
+              "transitions": [
+                "TRIGGERED",
+                "ESCALATED"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "protobuf": {
+      "upsert": [
+        {
+          "targetLost": {
+            "common": {
+              "name": "Target visibility",
+              "enabled": false,
+              "actions": [
+                {
+                  "actionType": "ALARM_ACTION_TYPE_SNAPSHOT",
+                  "levels": [
+                    "ALARM_LEVEL_ALARM",
+                    "ALARM_LEVEL_ACTION"
+                  ],
+                  "transitions": [
+                    "ALARM_TRANSITION_TRIGGERED",
+                    "ALARM_TRANSITION_ESCALATED"
+                  ]
+                }
+              ]
+            },
+            "targetIds": [
+              "T01"
+            ],
+            "levels": {
+              "alert": {
+                "lostForMs": 10000
+              },
+              "alarm": {
+                "lostForMs": 20000
+              },
+              "action": {
+                "lostForMs": 30000
+              }
+            },
+            "recoverForMs": 5000
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "create-input-voltage",
+    "method": "applyAlarmRules",
+    "json": {
+      "upsert": [
+        {
+          "name": "input-voltage",
+          "enabled": false,
+          "type": "VIN_LOW",
+          "levels": {
+            "ALARM": {
+              "enter": 10.5,
+              "enterForMs": 5000
+            }
+          },
+          "recoverForMs": 10000
+        }
+      ]
+    },
+    "protobuf": {
+      "upsert": [
+        {
+          "voltageLow": {
+            "common": {
+              "name": "input-voltage",
+              "enabled": false
+            },
+            "alarmType": "ALARM_TYPE_INPUT_VOLTAGE_LOW",
+            "levels": {
+              "alarm": {
+                "enter": 10.5,
+                "enterForMs": 5000
+              }
+            },
+            "recoverForMs": 10000
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "create-battery-voltage",
+    "method": "applyAlarmRules",
+    "json": {
+      "upsert": [
+        {
+          "name": "battery-voltage",
+          "enabled": false,
+          "type": "VBAT_LOW",
+          "levels": {
+            "ALARM": {
+              "enter": 10.5,
+              "enterForMs": 5000
+            }
+          },
+          "recoverForMs": 10000
+        }
+      ]
+    },
+    "protobuf": {
+      "upsert": [
+        {
+          "voltageLow": {
+            "common": {
+              "name": "battery-voltage",
+              "enabled": false
+            },
+            "alarmType": "ALARM_TYPE_BATTERY_VOLTAGE_LOW",
+            "levels": {
+              "alarm": {
+                "enter": 10.5,
+                "enterForMs": 5000
+              }
+            },
+            "recoverForMs": 10000
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "update-disabled",
+    "method": "applyAlarmRules",
+    "json": {
+      "upsert": [
+        {
+          "name": "X displacement",
+          "enabled": false,
+          "type": "DISP_LIMIT",
+          "targetIds": [
+            "T01"
+          ],
+          "metric": "DX",
+          "direction": "BIDIRECTIONAL",
+          "levels": {
+            "ALERT": {
+              "enter": 6,
+              "enterForMs": 1000
+            },
+            "ALARM": {
+              "enter": 10,
+              "enterForMs": 1000
+            },
+            "ACTION": {
+              "enter": 15,
+              "enterForMs": 1000
+            }
+          },
+          "recoverForMs": 2000,
+          "id": 12
+        }
+      ]
+    },
+    "protobuf": {
+      "upsert": [
+        {
+          "displacementLimit": {
+            "common": {
+              "name": "X displacement",
+              "enabled": false,
+              "id": 12
+            },
+            "targetIds": [
+              "T01"
+            ],
+            "metric": "ALARM_METRIC_DX",
+            "direction": "DISPLACEMENT_DIRECTION_BIDIRECTIONAL",
+            "levels": {
+              "alert": {
+                "enter": 6,
+                "enterForMs": 1000
+              },
+              "alarm": {
+                "enter": 10,
+                "enterForMs": 1000
+              },
+              "action": {
+                "enter": 15,
+                "enterForMs": 1000
+              }
+            },
+            "recoverForMs": 2000
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "delete-rule",
+    "method": "applyAlarmRules",
+    "json": {
+      "deleteIds": [
+        12
+      ]
+    },
+    "protobuf": {
+      "deleteIds": [
+        12
+      ]
+    }
+  }
+]

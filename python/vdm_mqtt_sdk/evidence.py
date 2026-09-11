@@ -1,4 +1,4 @@
-"""StdMqtt 告警抓拍图像 USTAR 分块的有界落盘与完整性校验。"""
+"""MQTT 告警抓拍图像 USTAR 分块的有界落盘与完整性校验。"""
 
 from __future__ import annotations
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import itertools
+import secrets
 import threading
 import time
 import uuid
@@ -47,6 +48,7 @@ class VdmMqttClientConfig:
     client_id: str = field(
         default_factory=lambda: f"vdm-sdk-python-{uuid.uuid4().hex[:12]}"
     )
+    subscription_suffixes: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         if not self.host.strip():
@@ -56,6 +58,12 @@ class VdmMqttClientConfig:
         if self.qos not in {0, 1, 2}:
             raise ValueError("MQTT qos 必须是 0、1 或 2")
         object.__setattr__(self, "payload_format", PayloadFormat.parse(self.payload_format))
+        if self.subscription_suffixes is not None:
+            supported = {"telemetry", "attributes", "event", "3A", "image", "rpc/req", "rpc/resp"}
+            if not self.subscription_suffixes or any(
+                suffix not in supported for suffix in self.subscription_suffixes
+            ):
+                raise ValueError("subscription_suffixes 必须包含有效的 VDM Topic 后缀")
 
 
 @dataclass
@@ -85,10 +93,11 @@ class VdmMqttClient:
         self.on_error = on_error
         self._connected = threading.Event()
         self._subscribed = threading.Event()
+        self._subscription_error: Exception | None = None
         self._stopped = threading.Event()
         self._pending: dict[int, _PendingRpc] = {}
         self._pending_lock = threading.Lock()
-        self._req_ids = itertools.count(1)
+        self._req_ids = itertools.count(secrets.randbelow((1 << 31) - 1) + 1)
         self._client = mqtt.Client(
             callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
             client_id=config.client_id,
@@ -127,6 +136,10 @@ class VdmMqttClient:
         if not self._subscribed.wait(self.config.connect_timeout):
             self.stop()
             raise TimeoutError(f"订阅 VDM Topic 超时: {self.config.topics.wildcard}")
+        if self._subscription_error is not None:
+            error = self._subscription_error
+            self.stop()
+            raise error
 
     def stop(self) -> None:
         if self._stopped.is_set():
@@ -168,7 +181,7 @@ class VdmMqttClient:
         allow_error: bool = False,
     ) -> DecodedPayload:
         if req_id is None:
-            req_id = next(self._req_ids)
+            req_id = (next(self._req_ids) - 1) % ((1 << 31) - 1) + 1
         payload, expected_field = self.codec.encode_rpc_request(method, params, req_id)
         pending = _PendingRpc(expected_field=expected_field)
         with self._pending_lock:
@@ -273,10 +286,15 @@ class VdmMqttClient:
             self._report_error(ConnectionError(f"MQTT 连接被拒绝: {reason_code}"))
             return
         self._connected.set()
-        result, _mid = client.subscribe(
-            self.config.topics.wildcard,
-            qos=self.config.qos,
-        )
+        self._subscription_error = None
+        if self.config.subscription_suffixes is None:
+            subscriptions = [(self.config.topics.wildcard, self.config.qos)]
+        else:
+            subscriptions = [
+                (self.config.topics.topic(suffix), self.config.qos)
+                for suffix in self.config.subscription_suffixes
+            ]
+        result, _mid = client.subscribe(subscriptions)
         if result != mqtt.MQTT_ERR_SUCCESS:
             self._report_error(RuntimeError(f"MQTT subscribe 失败 rc={result}"))
 
@@ -300,7 +318,11 @@ class VdmMqttClient:
                 call.event.set()
             self._report_error(error)
 
-    def _on_subscribe(self, _client: mqtt.Client, _userdata: Any, _mid: int, *_extra: Any) -> None:
+    def _on_subscribe(self, _client: mqtt.Client, _userdata: Any, _mid: int, *extra: Any) -> None:
+        reasons = extra[0] if extra else []
+        if any(getattr(code, "is_failure", False) or (isinstance(code, int) and code >= 128) for code in reasons):
+            self._subscription_error = PermissionError("MQTT Broker 拒绝订阅，请检查 Topic 权限")
+            self._report_error(self._subscription_error)
         self._subscribed.set()
 
     def _on_message(self, _client: mqtt.Client, _userdata: Any, msg: mqtt.MQTTMessage) -> None:

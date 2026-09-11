@@ -1,337 +1,263 @@
 # Inteagle VDM MQTT 示例
 
-本仓库提供 VDM 设备 MQTT 数据的 Python、Go、Java、JavaScript SDK 源码、完整解析示例和
-NanoMQ 自动测试。四种语言使用同一份
-[`proto/inteagle_vdm_mqtt_v1.proto`](proto/inteagle_vdm_mqtt_v1.proto)，可直接得到
-遥测、设备属性、事件、告警、RPC、普通图片和告警抓拍图像包的消息对象及可读字段。
+系统集成商平台通过 MQTT Broker 接入设备。本仓库提供 Python、Go、Java 和 JavaScript 的数据接收、属性查询、告警配置及抓拍接收代码，支持 Protobuf（推荐）和 JSON。
 
-设备连接建立时需要明确选择 `JSON` 或 `Protobuf` Payload 格式。云端应按照所选格式
-解析，不应根据 Payload 字节自动猜测格式。`image` Topic 始终使用二进制结构：类型 `1`
-是普通图片，类型 `2` 是 76 字节固定 Header + 最大 128 KiB USTAR 告警抓拍图像包分块；
-二者均不使用 JSON 或 Protobuf 包装。
+1. [接入系统集成商 MQTT Broker](#quick-test)。
+2. [接收位移](#receive-data)，再[查询设备属性](#query-attributes)。
+3. [配置告警](examples/alarms/README.md)，接收并确认[告警抓拍](#alarm-evidence)。
 
 <a id="quick-test"></a>
 
-## 一键验证
+## 接入系统集成商 MQTT Broker
 
-环境要求：Docker Engine 和 Docker Compose v2。
+准备 Git、Docker Engine、Docker Compose v2，以及一台已配置标靶、完成初始化并启动测量的设备。
 
-```bash
-# 默认验证 Protobuf
-./run_demo.sh
+向系统集成商获取连接参数，在设备 App 中配置 MQTT 连接，并在运行示例的电脑或服务器上设置：
 
-# 分别验证 Protobuf 或 JSON
-./run_demo.sh protobuf
-./run_demo.sh json
-
-# 依次验证两种格式
-./run_demo.sh all
-```
-
-脚本会构建并启动以下服务：
-
-| 服务 | 作用 |
+| 配置 | 填写内容 |
 | --- | --- |
-| `nanomq` | 本地 MQTT Broker，宿主机端口默认为 `18883` |
-| `python-consumer` | Python Payload 解析示例 |
-| `go-consumer` | Go Payload 解析示例 |
-| `java-consumer` | Java Payload 解析示例 |
-| `javascript-consumer` | JavaScript Payload 解析示例 |
-| `publisher` | 等待四个订阅端就绪，发布测试数据并汇总结果 |
-
-成功时四个语言订阅端会输出每条消息解析后的完整字段和 `PASS`，发布器最后输出
-`PASS profile=... consumers=go,java,javascript,python`。任意语言解析失败、Topic 缺失或等待超时，
-命令都会返回非零退出码。
-
-例如 Protobuf 遥测和告警会解析为可读结构，而不是只打印 Payload 长度：
-
-```text
-topic=telemetry data={"schemaVersion":1,"displacement":{"sampleFrequencyHz":20,"targets":[{"targetId":"T01","dxMm":[0.125,0.25,0.375],"dyMm":[-0.5,-0.625,-0.75]}],"firstSampleTimestampMs":"1721805600000"}}
-topic=3A data={"schemaVersion":1,"eventId":"9001","alarmId":"701","alarmType":"ALARM_TYPE_DISPLACEMENT_LIMIT","level":"ALARM_LEVEL_ALERT","transition":"ALARM_TRANSITION_TRIGGERED","displacement":{"targetId":"T01","valueMm":3.5,"limitMm":3.0}}
-topic=image data={"messageType":2,"headerLength":76,"packageFormat":1,"evidenceKind":1,"eventId":"9001","packageLength":"10240","chunkIndex":0,"chunkCount":1}
-```
-
-示例消息同时验证 JSON/Protobuf 业务消息和二进制告警抓拍图像包分块。
-发布器会输出每条消息的实际 `bytes`，可用实际标靶数和采样频率重新评估流量。
-
-可通过环境变量修改宿主机映射端口：
+| Broker 地址 | 系统集成商提供的域名、公网 IP 或内网 IP |
+| 端口 | 系统集成商指定的 MQTT 端口，以下以 `1883` 为例 |
+| 用户名、密码 | 按系统集成商的认证要求填写 |
+| 设备 ID | 需要接收数据的设备 ID |
+| Payload | `Protobuf`（推荐）或 `JSON` |
 
 ```bash
-NANOMQ_PORT=28883 ./run_demo.sh protobuf
+git clone https://github.com/inteagle-vision/inteagle-vdm-mqtt-examples.git
+cd inteagle-vdm-mqtt-examples
+export MQTT_HOST=YOUR_BROKER_HOST
+export MQTT_PORT=1883              # 替换为实际端口
+export VDM_DEVICE_ID=YOUR_DEVICE_ID
+export VDM_PAYLOAD_FORMAT=protobuf # JSON 使用 json
+# Broker 要求认证时，设置以下参数：
+# export MQTT_USERNAME='YOUR_USERNAME'
+# export MQTT_PASSWORD='YOUR_PASSWORD'
+./run_demo.sh "$VDM_PAYLOAD_FORMAT"
 ```
 
-默认只监听本机。如需让同一局域网中的真实设备连接测试 Broker，显式设置监听地址：
+接收端账号须有设备 Topic 的订阅权限，以及 RPC 请求 Topic 的发布权限。脚本在后台启动接收程序，连接上述 Broker。查看日志：
 
 ```bash
-NANOMQ_BIND_ADDRESS=0.0.0.0 NANOMQ_PORT=18883 docker compose up nanomq
+docker compose logs -f python-data go-data java-data javascript-data
 ```
 
-<a id="topic-mapping"></a>
+按 `Ctrl-C` 退出日志查看，服务继续运行。`READY` 表示完成订阅；日志出现设备的标靶 ID 和位移数组，才表示收到测量数据。位移单位为 mm：
 
-## 示例覆盖范围
+| 格式 | 可读输出中的位移字段 |
+| --- | --- |
+| Protobuf | `displacement.targets[].dx`、`dy` |
+| JSON | `disp.d[标靶ID].dx`、`dy` |
 
-默认设备 ID 为 `DEMO001`，测试覆盖以下 Topic：
+<a id="nanomq-local"></a>
 
-| Topic | Protobuf 根消息 | 方向 |
-| --- | --- | --- |
-| `vdm/DEMO001/telemetry` | `Telemetry` | 设备到云端 |
-| `vdm/DEMO001/attributes` | `Attributes` | 设备到云端 |
-| `vdm/DEMO001/event` | `Event` | 设备到云端 |
-| `vdm/DEMO001/3A` | `Alarm` | 设备到云端 |
-| `vdm/DEMO001/rpc/req` | `RpcRequest` | 云端到设备 |
-| `vdm/DEMO001/rpc/resp` | `RpcResponse` | 设备到云端 |
-| `vdm/DEMO001/image` | 非 Protobuf | 设备到云端 |
+## 可选：启动 NanoMQ 联调
 
-四个订阅端都根据 Topic 选择明确的 Protobuf 根消息。带 `schema_version`
-的消息必须等于 `1`。SDK 覆盖 29 个强类型 Protobuf RPC，包括告警管理、
-抓拍图像查询、重试和应用确认。
+需要自建 Broker 时，在仓库根目录执行，沿用设备 ID 和数据格式：
 
-JSON Event 固定为 `{"type":"...","ts":<Unix秒>,"detail":{...}}`，
-不接受旧的 `event/data` 别名。首发契约只有
-`REF_INIT_RESULT`、`CRUISE_REACHED`、`TARGET_TRACKING` 和
-`ALARM_EVIDENCE`。`TARGET_TRACKING.state` 只有 `LOST|TRACKING`；
-配置规则产生的 `TARGET_LOST` 属于 `3A` 告警，不是普通 Event。
+```bash
+unset MQTT_HOST MQTT_PORT MQTT_USERNAME MQTT_PASSWORD
+export NANOMQ_BIND_ADDRESS=0.0.0.0
+export NANOMQ_PORT=18883
+./run_demo.sh "$VDM_PAYLOAD_FORMAT"
+```
 
-<a id="sdk"></a>
+脚本启动附带的 NanoMQ 和各语言接收端。在设备 App 中填写设备可达的服务器域名或 IP、映射端口（默认 `18883`）及对应 Payload 格式。此 NanoMQ 联调配置默认未启用用户名密码认证。
 
-## SDK 能力
+<a id="receive-data"></a>
 
-- 按连接配置解析 JSON 或 Protobuf，不猜测 Payload 格式。
-- 返回语言对应的 Protobuf 消息对象，同时提供 JSON 兼容字段视图。
-- 解析位移/环境量遥测、设备属性、事件、告警、RPC 以及两类图片 Header。
-- 从字典/Map 构造 29 个强类型 Protobuf RPC；JSON 与 Protobuf 均支持 5 个告警管理 RPC。
-- 四种语言均提供磁盘优先的有界分块重组、USTAR/长度/SHA-256/成员安全校验、原子接收回执，以及 `getEvidenceStatus`、`retryEvidence`、`ackEvidencePackage` 便捷调用。
-- 自动维护并发 RPC 的 `req_id`、超时和错误码，断线重连后自动重新订阅。
-- 四种语言都只以 `code == 0` 判断成功；`1` 是通用失败，其他非零码是可直接处理的细分错误。
-- RPC 在线 Payload 不携带重复的 `msg/message` 文本；SDK 在本地按数字错误码生成可读说明。
-- 每个 SDK 客户端实例拥有独立 Topic 和 pending 表；不同设备或云连接不能共享实例。
+## 单独运行一种语言
 
-最后一条是 RPC 隔离边界：设备端按发起请求的 `cloudId` 返回响应，云端 SDK 再按当前
-MQTT 客户端实例和 `req_id` 关联，不能把 A 连接的响应交给 B 连接。
+也可以使用本机语言环境运行。沿用系统集成商提供的连接参数，再选择语言：
 
+```bash
+export MQTT_HOST=YOUR_BROKER_HOST
+export MQTT_PORT=1883
+export VDM_DEVICE_ID=YOUR_DEVICE_ID
+export VDM_PAYLOAD_FORMAT=protobuf # JSON 连接使用 json
+# Broker 要求认证时，设置 MQTT_USERNAME 和 MQTT_PASSWORD
+```
+
+连接本机 NanoMQ 时，使用 `MQTT_HOST=127.0.0.1 MQTT_PORT=18883`。以下安装命令从仓库根目录执行。
+
+<a id="python-setup"></a>
 <a id="python-sdk"></a>
 
 ### Python
 
-[`python/vdm_mqtt_sdk`](python/vdm_mqtt_sdk) 是可直接复用的 SDK 包，
-[`python/consumer.py`](python/consumer.py) 是完整运行示例。
+要求 Python 3.10+。
 
-```python
-from vdm_mqtt_sdk import VdmMqttClient, VdmMqttClientConfig, VdmTopics
-
-topics = VdmTopics.for_device("DEVICE_ID")
-
-def on_message(message):
-    print(message.suffix, message.as_dict())  # 完整可读字段
-    telemetry = message.value                # Protobuf 模式下为强类型消息
-
-with VdmMqttClient(
-    VdmMqttClientConfig(
-        host="mqtt.example.com",
-        port=1883,
-        topics=topics,
-        payload_format="protobuf",
-    ),
-    on_message=on_message,
-) as client:
-    response = client.call("getAttr", {"keys": ["deviceId", "fwVer"]})
+```bash
+cd python
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python -m grpc_tools.protoc -I../proto --python_out=. ../proto/inteagle_vdm_mqtt_v1.proto
+python receive_data.py
 ```
+
+[接收代码](python/receive_data.py) · [SDK](python/vdm_mqtt_sdk)
 
 <a id="go-sdk"></a>
 
 ### Go
 
-[`go/sdk`](go/sdk) 提供连接、编解码和 RPC 封装，
-[`go/cmd/consumer`](go/cmd/consumer) 是完整运行示例。
+要求 Go 1.24+ 和 `protoc`。
 
-```go
-topics, _ := sdk.TopicsForDevice("DEVICE_ID")
-client, _ := sdk.NewClient(sdk.Config{
-    Host: "mqtt.example.com", Port: 1883, Topics: topics,
-    PayloadFormat: sdk.Protobuf, QoS: 1,
-}, func(message *sdk.DecodedPayload) {
-    fields, _ := message.AsMap()
-    fmt.Println(message.Suffix, fields)
-}, func(err error) { log.Println(err) })
-
-ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-defer cancel()
-_ = client.Start(ctx)
-response, err := client.Call(
-    ctx, "getAttr", map[string]any{"keys": []string{"deviceId"}}, 0, false,
-)
+```bash
+cd go
+go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.5
+export PATH="$(go env GOPATH)/bin:$PATH"
+mkdir -p generated
+protoc -I../proto --go_out=generated --go_opt=paths=source_relative ../proto/inteagle_vdm_mqtt_v1.proto
+go run ./cmd/receive-data
 ```
+
+[接收代码](go/cmd/receive-data/main.go) · [SDK](go/sdk)
 
 <a id="java-sdk"></a>
 
 ### Java
 
-[`java/src/main/java/com/inteagle/vdm/mqtt/sdk`](java/src/main/java/com/inteagle/vdm/mqtt/sdk)
-提供 SDK，完整运行示例位于
-[`Consumer.java`](java/src/main/java/com/inteagle/examples/vdm/Consumer.java)。
+要求 JDK 21+ 和 Maven；构建会生成 Protobuf 类型并打包依赖。
 
-```java
-VdmTopics topics = VdmTopics.forDevice("DEVICE_ID");
-VdmMqttClient client = new VdmMqttClient(
-    new VdmMqttClient.Config(
-        "mqtt.example.com", 1883, topics, PayloadFormat.PROTOBUF,
-        null, null, null, 1, Duration.ofSeconds(10)),
-    message -> System.out.println(message.suffix() + " " + message.data()),
-    Throwable::printStackTrace);
-
-client.start();
-DecodedPayload response = client.call(
-    "getAttr", Map.of("keys", List.of("deviceId")), Duration.ofSeconds(10));
+```bash
+cd java
+mvn -q package
+java -cp target/vdm-mqtt-consumer-1.0.0.jar com.inteagle.examples.vdm.ReceiveData
 ```
+
+[接收代码](java/src/main/java/com/inteagle/examples/vdm/ReceiveData.java) · [SDK](java/src/main/java/com/inteagle/vdm/mqtt/sdk)
 
 <a id="javascript-sdk"></a>
 
 ### JavaScript / TypeScript
 
-[`javascript/sdk`](javascript/sdk) 是无需编译的 CommonJS SDK，并提供
-[`index.d.ts`](javascript/sdk/index.d.ts) 类型声明；
-[`javascript/consumer.js`](javascript/consumer.js) 是完整运行示例。
+要求 Node.js 22+。
 
-```javascript
-const { VdmMqttClient, VdmTopics } = require("./sdk");
-
-const client = new VdmMqttClient({
-  host: "mqtt.example.com",
-  port: 1883,
-  topics: VdmTopics.forDevice("DEVICE_ID"),
-  payloadFormat: "protobuf",
-  qos: 1,
-}, (message) => {
-  console.log(message.suffix, message.data); // 完整可读字段
-  console.log(message.value);                // protobufjs 消息对象
-});
-
-await client.start();
-const response = await client.call(
-  "getAttr",
-  { keys: ["deviceId"] },
-  { timeoutMs: 10_000 },
-);
+```bash
+cd javascript
+npm ci
+node receive_data.js
 ```
+
+[接收代码](javascript/receive_data.js) · [SDK](javascript/sdk) · [TypeScript 类型](javascript/sdk/index.d.ts)
+
+各接收入口默认订阅 `telemetry`、`attributes`，持续输出设备数据。按 `Ctrl-C` 退出。
+
+<a id="query-attributes"></a>
+
+## 查询设备属性
+
+使用 Docker 联调时，在仓库根目录运行下列任一命令，保留启动时导出的环境变量：
+
+```bash
+docker compose run --rm --no-deps python-data --query-attributes
+docker compose run --rm --no-deps go-data --query-attributes
+docker compose run --rm --no-deps java-data --query-attributes
+docker compose run --rm --no-deps javascript-data --query-attributes
+```
+
+每条命令查询后持续接收数据，按 `Ctrl-C` 退出，再运行下一种语言。
+
+使用本机语言环境时，停止上面的接收进程后，在相同语言目录、沿用相同连接参数运行：
+
+| 语言 | 命令 |
+| --- | --- |
+| Python | `python receive_data.py --query-attributes` |
+| Go | `go run ./cmd/receive-data --query-attributes` |
+| Java | `java -cp target/vdm-mqtt-consumer-1.0.0.jar com.inteagle.examples.vdm.ReceiveData --query-attributes` |
+| JavaScript | `node receive_data.js --query-attributes` |
+
+程序调用一次 `getAttr`，查询设备 ID、型号、固件版本和测量状态，打印 `RESPONSE` 后继续接收数据。`code:0` 表示成功。
+
+## 告警配置与订阅
+
+按 [各语言告警示例](examples/alarms/README.md) 查询能力和规则，再提交自己的完整配置。示例包括五种规则、三级告警、规则增删改以及当前告警和历史查询。
+
+| 语言 | 查询当前告警并监听 60 秒 |
+| --- | --- |
+| Python | `python alarm_rpc.py --case active-state --listen 60` |
+| Go | `go run ./cmd/alarm-rpc --case active-state --listen 60` |
+| Java | `java -cp target/vdm-mqtt-consumer-1.0.0.jar com.inteagle.examples.vdm.AlarmRpc --case active-state --listen 60` |
+| JavaScript | `node alarm_rpc.js --case active-state --listen 60` |
+
+`alarmId` 关联一次告警生命周期，`eventId` 关联其中一次状态变化。等级为 `ALERT < ALARM < ACTION`；`RECOVERED`、`CANCELLED` 结束生命周期且省略等级。
 
 <a id="alarm-evidence"></a>
 
-## 告警与抓拍图像对接
+## 告警抓拍接收与确认
 
-0.8.5 中，`alarmId` 表示一次完整告警生命周期，`eventId` 表示其中一次
-状态变化。`RECOVERED` 或 `CANCELLED` 表示该 `alarmId` 的生命周期结束。
-告警抓拍图像使用触发它的 `eventId`，因此客户平台的关联键为：
+规则配置 `SNAPSHOT` 动作后才会抓拍。仅有一个已启用的系统集成商 MQTT 连接，且未另行指定或关闭抓拍上传时，设备默认向该连接发送图像；多个连接时需指定接收目标。
 
-```text
-deviceId + alarm.eventId == deviceId + imageHeader.eventId
-```
-
-建议平台保存 `deviceId + alarmId` 作为生命周期主键，并将 `eventId`
-作为状态变化和抓拍图像去重键。不要从 ID 位布局互相推导。
-
-StdMqtt 告警抓拍图像的流程为：
-
-1. 接收 `3A` 告警，并在现有 `image` Topic 接收 `messageType=2` 的 128 KiB 图像包分块；两者可能乱序或重复。
-2. 按 `deviceId + eventId + packageSha256 + chunkIndex` 幂等落盘，校验分块范围、图像包长度和 SHA-256。
-3. 完整 USTAR 图像包持久化且验证 `manifest.json` 后，从同一 StdMqtt 连接调用 `ackEvidencePackage`。
-
-四种语言使用同一接收边界：
-
-| SDK | 分块重组器 |
-| --- | --- |
-| Python | `AlarmSnapshotPackageAssembler` |
-| Go | `NewAlarmSnapshotPackageAssembler(...)` |
-| Java | `AlarmSnapshotPackageAssembler` |
-| JavaScript / TypeScript | `AlarmSnapshotPackageAssembler` |
-
-重组器只有在图像包和 `receipt.json` 均持久化且校验通过后才返回完成结果；调用方随后从接收分块的同一 MQTT 客户端执行 ACK。
-
-设备只启用一个 StdMqtt 连接时，0.8.5 默认选择该连接发送告警抓拍图像；若同时启用多个
-StdMqtt，设备管理员必须明确选择一个抓拍图像目的地，固件不会猜测。客户平台无需接触
-Inteagle OSS/STS 配置。
-
-Python 参考接收器：
+使用 Docker 时，在仓库根目录启动各语言的抓拍接收器：
 
 ```bash
-cd python
-MQTT_HOST=mqtt.example.com \
-MQTT_PORT=1883 \
-MQTT_USERNAME=customer \
-MQTT_PASSWORD='***' \
-VDM_DEVICE_ID=DEVICE_ID \
-VDM_PAYLOAD_FORMAT=json \
-VDM_EVIDENCE_DIR=./evidence \
-python evidence_receiver.py
+./run_demo.sh "$VDM_PAYLOAD_FORMAT" --evidence
+docker compose logs -f python-evidence go-evidence java-evidence javascript-evidence
 ```
 
-它在 `<VDM_EVIDENCE_DIR>/<eventId>/` 下保存校验后的 USTAR 包和本地
-`receipt.json`。`receipt.json` 是客户接收回执，不伪装成设备内部
-`manifest.json`。示例不包含 Inteagle OSS/STS 凭据或内部上传接口。
+每种语言使用独立的持久化卷保存图像包。使用本机语言环境时，在所选语言目录运行接收器；`VDM_EVIDENCE_DIR` 指定保存目录，每台设备使用独立目录：
 
-告警配置和历史查询可以使用 JSON 或 Protobuf：
-
-```javascript
-const state = await client.call("getAlarmState", {});
-const history = await client.call("listAlarmHistory", { limit: 20 });
-const incident = await client.call("listAlarmHistory", { alarmId: "9754138318563442692" });
+```bash
+export VDM_EVIDENCE_DIR=./evidence
 ```
 
-精确按 `alarmId` 查询 `listAlarmHistory` 时，设备会在该生命周期记录中
-附加当前可见的抓拍图像摘要。Protobuf V1 已为
-`getAlarmCaps` / `listAlarmRules` / `applyAlarmRules` / `getAlarmState` /
-`listAlarmHistory` 提供强类型 oneof。
+| 语言 | 命令 | 完整代码 |
+| --- | --- | --- |
+| Python | `python evidence_receiver.py` | [Python](python/evidence_receiver.py) |
+| Go | `go run ./cmd/evidence-receiver` | [Go](go/cmd/evidence-receiver/main.go) |
+| Java | `java -cp target/vdm-mqtt-consumer-1.0.0.jar com.inteagle.examples.vdm.EvidenceReceiver` | [Java](java/src/main/java/com/inteagle/examples/vdm/EvidenceReceiver.java) |
+| JavaScript | `node evidence_receiver.js` | [JavaScript](javascript/evidence_receiver.js) |
 
-<a id="language-examples"></a>
+接收器使用 `deviceId + eventId` 关联告警和图像，依次输出：
 
-## 目录结构
+- `CHUNK`：收到图像包分块。
+- `VERIFIED`：完成长度、SHA-256 和安全 USTAR 校验，图像包与 `receipt.json` 已保存。
+- `ACKED`：从接收图像的同一 MQTT 连接成功调用 `ackEvidencePackage`。
 
-```text
-.
-├── compose.yaml                         # NanoMQ、四个消费者与发布器
-├── proto/
-│   ├── inteagle_vdm_mqtt_v1.proto       # V1 Schema（中文注释）
-│   ├── inteagle_customer_mqtt_v1.desc    # V1 Protobuf Descriptor Set
-│   └── SHA256SUMS                       # Schema 完整性校验
-├── python/
-│   ├── vdm_mqtt_sdk/                    # Python SDK
-│   ├── tests/                           # Python SDK 单元测试
-│   ├── consumer.py                      # Python SDK 使用示例
-│   ├── evidence_receiver.py             # 抓拍图像包分块落盘、校验与 ACK 示例
-│   └── publisher.py                     # JSON/Protobuf 测试数据发布
-├── go/
-│   ├── sdk/                             # Go SDK、图像包重组器与测试
-│   └── cmd/consumer/main.go             # Go SDK 使用示例
-├── java/src/
-    ├── main/java/.../mqtt/sdk/           # Java SDK 与图像包重组器
-    ├── main/java/.../Consumer.java       # Java SDK 使用示例
-    └── test/java/.../VdmCodecTest.java   # Java SDK 单元测试
-└── javascript/
-    ├── sdk/snapshot-package.js           # JavaScript 图像包重组器
-    ├── sdk/                              # JavaScript SDK 与 TypeScript 类型
-    ├── tests/                            # Node.js SDK 单元测试
-    └── consumer.js                       # JavaScript SDK 使用示例
-```
+接收器遇到限流、超时或临时断线时，按 1、2、4 秒退避重试 ACK，最多尝试 4 次；参数错误直接报错。
 
-Docker 构建期间，Python、Go、Java 从同一份 `.proto` 生成类型，JavaScript 由
-`protobufjs` 直接加载同一 Schema，避免多份契约漂移。生产项目可按各语言目录中的依赖
-与构建方式集成。Broker 地址、账号和设备 ID 均由 SDK 配置传入，
-示例仓库不包含设备管理 HTTP 接口、内网地址或凭据。
+`image` 始终使用二进制格式。类型 `1` 为普通 JPEG，类型 `2` 为 76 字节 Header 加最多 128 KiB 的告警图像包分块。Broker 的 PUBACK 不能替代应用层确认；需要补传时见 [查询进度与重试](examples/alarms/README.md#告警抓拍上传)。
 
-可在仓库根目录校验 Schema 和 Descriptor Set 是否完整：
+<a id="topic-mapping"></a>
+
+## Topic 与消息类型
+
+| Topic | Protobuf 根消息 | 方向 |
+| --- | --- | --- |
+| `vdm/{deviceId}/telemetry` | `Telemetry` | 设备上报 |
+| `vdm/{deviceId}/attributes` | `Attributes` | 设备上报 |
+| `vdm/{deviceId}/event` | `Event` | 设备上报 |
+| `vdm/{deviceId}/3A` | `Alarm` | 设备上报 |
+| `vdm/{deviceId}/rpc/req` | `RpcRequest` | 平台下发 |
+| `vdm/{deviceId}/rpc/resp` | `RpcResponse` | 设备响应 |
+| `vdm/{deviceId}/image` | 二进制图片或图像包分块 | 设备上报 |
+
+<a id="sdk"></a>
+
+## SDK 能力
+
+各语言均提供消息解析、29 个 RPC 的请求构造与响应关联、重连订阅、告警图像包重组与 ACK。配置项、枚举和请求参数见 [告警接入示例](examples/alarms/README.md)。
+
+<a id="schema"></a>
+
+## Schema
+
+各语言共用 [inteagle_vdm_mqtt_v1.proto](proto/inteagle_vdm_mqtt_v1.proto)。声明了 `schema_version` 的消息，其值为 `1`。Protobuf 的 64 位 ID 在可读 JSON 输出中使用十进制字符串，保留完整精度。
 
 ```bash
 sha256sum --check proto/SHA256SUMS
 ```
 
-<a id="schema"></a>
+<a id="language-examples"></a>
 
-## Schema 兼容规则
+## 代码入口
 
-- V1 Payload 的 `schema_version` 必须为 `1`。
-- 已发布字段编号与含义不可修改；废弃字段应使用 `reserved` 保留。
-- 新能力使用新的字段编号，并保持旧解析端能够忽略未知字段。
-- RPC 的 `req_id` 必须原样返回；云端还必须按连接上下文隔离请求和响应。
-- Payload 格式属于设备连接配置，不进行 JSON/Protobuf 自动探测。
-- 位移空方向不产生编码字节；三个方向全空时省略该 target。云端使用批次的 `first_sample_timestamp_ms` 和 `sample_frequency_hz` 还原样本时间。
+| 语言 | 接收位移 / 属性 | 告警配置 | 抓拍接收 |
+| --- | --- | --- | --- |
+| Python | [receive_data.py](python/receive_data.py) | [alarm_rpc.py](python/alarm_rpc.py) | [evidence_receiver.py](python/evidence_receiver.py) |
+| Go | [receive-data](go/cmd/receive-data/main.go) | [alarm-rpc](go/cmd/alarm-rpc/main.go) | [evidence-receiver](go/cmd/evidence-receiver/main.go) |
+| Java | [ReceiveData](java/src/main/java/com/inteagle/examples/vdm/ReceiveData.java) | [AlarmRpc](java/src/main/java/com/inteagle/examples/vdm/AlarmRpc.java) | [EvidenceReceiver](java/src/main/java/com/inteagle/examples/vdm/EvidenceReceiver.java) |
+| JavaScript | [receive_data.js](javascript/receive_data.js) | [alarm_rpc.js](javascript/alarm_rpc.js) | [evidence_receiver.js](javascript/evidence_receiver.js) |
 
-更完整的字段、RPC 方法和图片 Header 说明请参阅 VDM 设备接入文档。
+CI 回归测试保存在 [tests](tests) 与各语言测试目录，用于验证编码、边界和重组行为。设备接通以实际设备的 RPC 响应和数据上报为准。
