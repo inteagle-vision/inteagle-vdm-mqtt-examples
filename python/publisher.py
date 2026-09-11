@@ -83,7 +83,7 @@ def protobuf_fixtures() -> list[tuple[str, bytes]]:
 
     event = pb.Event(
         schema_version=1,
-        timestamp_s=TIMESTAMP_S,
+        ts=TIMESTAMP_S,
         event_type=pb.EVENT_TYPE_REF_INIT_RESULT,
     )
     event.ref_init_result.successful_target_ids.append("T01")
@@ -96,7 +96,7 @@ def protobuf_fixtures() -> list[tuple[str, bytes]]:
         alarm_type=pb.ALARM_TYPE_DISPLACEMENT_LIMIT,
         level=pb.ALARM_LEVEL_ALERT,
         transition=pb.ALARM_TRANSITION_TRIGGERED,
-        timestamp_s=TIMESTAMP_S,
+        ts=TIMESTAMP_S,
     )
     alarm.displacement.target_id = "T01"
     alarm.displacement.metric = pb.ALARM_METRIC_DX
@@ -106,7 +106,7 @@ def protobuf_fixtures() -> list[tuple[str, bytes]]:
 
     evidence = pb.Event(
         schema_version=1,
-        timestamp_s=TIMESTAMP_S,
+        ts=TIMESTAMP_S,
         event_type=pb.EVENT_TYPE_ALARM_EVIDENCE,
     )
     evidence.alarm_evidence.event_id = EVIDENCE_EVENT_ID

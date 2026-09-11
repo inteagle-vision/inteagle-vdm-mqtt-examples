@@ -22,6 +22,25 @@ from vdm_mqtt_sdk.codec import RPC_REQUEST_TYPES
 
 
 class VdmCodecTests(unittest.TestCase):
+    def test_public_seconds_timestamps_use_ts_and_preserve_wire_tags(self) -> None:
+        for message, number in [(pb.EnvironmentTelemetry, 1), (pb.DeviceStatusTelemetry, 1),
+                                (pb.Event, 2), (pb.Alarm, 8), (pb.AlarmEvidence, 4)]:
+            with self.subTest(message=message.__name__):
+                field = message.DESCRIPTOR.fields_by_name["ts"]
+                self.assertEqual(field.number, number)
+                self.assertEqual(field.type, field.TYPE_UINT64)
+                self.assertEqual(message.FromString(message(ts=1734567890).SerializeToString()).ts, 1734567890)
+        telemetry = pb.Telemetry(schema_version=1)
+        topics = VdmTopics.for_device("DEMO001")
+        for field in ["environment", "device_status"]:
+            telemetry.ClearField("environment")
+            telemetry.ClearField("device_status")
+            getattr(telemetry, field).ts = 1734567890
+            decoded = VdmCodec("protobuf").decode(
+                topics.topic("telemetry"), topics, telemetry.SerializeToString()
+            ).as_dict()
+            self.assertEqual(decoded["environment" if field == "environment" else "deviceStatus"]["ts"], "1734567890")
+
     def test_displacement_arrays_use_public_dx_dy_dz_names(self) -> None:
         telemetry = pb.Telemetry(schema_version=1)
         target = telemetry.displacement.targets.add(target_id="T01")

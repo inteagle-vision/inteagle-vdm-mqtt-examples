@@ -124,7 +124,7 @@ message DisplacementTelemetry {
 
 // 环境传感器数据。字段缺失与数值 0 含义不同，因此各传感器数值均为 optional。
 message EnvironmentTelemetry {
-  uint64 timestamp_s = 1;
+  uint64 ts = 1; // UTC Unix 时间戳，单位秒。
   optional float temperature_c = 2;
   optional float humidity_percent_rh = 3;
   optional float pressure_hpa = 4;
@@ -133,7 +133,7 @@ message EnvironmentTelemetry {
 // 客户可见的最小设备运行状态。时间戳本身不构成可上报数据；设备仅在
 // lte_dbm 或 input_voltage_v 至少一项存在时发送该消息。
 message DeviceStatusTelemetry {
-  uint64 timestamp_s = 1;
+  uint64 ts = 1; // UTC Unix 时间戳，单位秒。
   reserved 2;
   optional sint32 lte_dbm = 3;
   optional double input_voltage_v = 4;
@@ -254,13 +254,12 @@ message AlarmEvidenceEventDetail {
   optional EvidenceFailureReason reason = 7;
 }
 
-// event_type 必须与 detail oneof 中的字段一致。未定义稳定客户契约的设备内部
-// 事件不会通过 StdMqtt 上报。
+// event_type 必须与 detail oneof 中的字段一致。
 message Event {
   reserved 4, 100;
   reserved "message", "extension";
   uint32 schema_version = 1;
-  uint64 timestamp_s = 2;
+  uint64 ts = 2; // UTC Unix 时间戳，单位秒。
   EventType event_type = 3;
   oneof detail {
     RefInitResultEvent ref_init_result = 10;
@@ -347,7 +346,7 @@ message Alarm {
   AlarmType alarm_type = 5;
   optional AlarmLevel level = 6;
   AlarmTransition transition = 7;
-  uint64 timestamp_s = 8;
+  uint64 ts = 8; // UTC Unix 时间戳，单位秒。
   oneof detail {
     DisplacementAlarmDetail displacement = 10;
     DisplacementRateAlarmDetail displacement_rate = 11;
@@ -381,12 +380,12 @@ enum EvidenceFailureReason {
 
 // Standalone state object used by evidence RPC responses and the provider-
 // specific HS evidence topic. Event.alarm_evidence uses the timestamp-free
-// AlarmEvidenceEventDetail because Event.timestamp_s is authoritative.
+// AlarmEvidenceEventDetail because Event.ts is authoritative.
 message AlarmEvidence {
   uint64 event_id = 1;
   EvidenceKind kind = 2;
   EvidenceState state = 3;
-  uint64 timestamp_s = 4;
+  uint64 ts = 4; // UTC Unix 时间戳，单位秒。
   optional string evidence_id = 5;
   optional bool partial = 6;
   optional EvidenceFailureReason reason = 7;
@@ -545,7 +544,7 @@ message EvidenceQueryRequest {
 }
 
 // 客户平台在完整校验同一 V2 TAR 证据包后确认接收。package_sha256 必须是
-// 64 个小写十六进制字符；设备只接受发出该证据包的同一 StdMqtt 实例确认。
+// 64 个小写十六进制字符；设备只接受发出该证据包的同一 MQTT 连接确认。
 message EvidencePackageAckRequest {
   uint64 event_id = 1;
   EvidenceKind kind = 2;

@@ -24,7 +24,7 @@
       "ruleId": 12,
       "alarmType": "ALARM_TYPE_DISPLACEMENT_LIMIT",
       "transition": "ALARM_TRANSITION_TRIGGERED",
-      "timestampS": "1734567890",
+      "ts": "1734567890",
       "displacement": {
         "targetId": "T01",
         "metric": "ALARM_METRIC_DX",
@@ -60,7 +60,7 @@
       "ruleId": 12,
       "alarmType": "ALARM_TYPE_DISPLACEMENT_LIMIT",
       "transition": "ALARM_TRANSITION_ESCALATED",
-      "timestampS": "1734567895",
+      "ts": "1734567895",
       "displacement": {
         "targetId": "T01",
         "metric": "ALARM_METRIC_DX",
@@ -96,7 +96,7 @@
       "ruleId": 12,
       "alarmType": "ALARM_TYPE_DISPLACEMENT_LIMIT",
       "transition": "ALARM_TRANSITION_DEESCALATED",
-      "timestampS": "1734567900",
+      "ts": "1734567900",
       "displacement": {
         "targetId": "T01",
         "metric": "ALARM_METRIC_DX",
@@ -130,7 +130,7 @@
       "ruleId": 12,
       "alarmType": "ALARM_TYPE_DISPLACEMENT_LIMIT",
       "transition": "ALARM_TRANSITION_SYNCED",
-      "timestampS": "1734567905",
+      "ts": "1734567905",
       "displacement": {
         "targetId": "T01",
         "metric": "ALARM_METRIC_DX",
@@ -163,7 +163,7 @@
       "ruleId": 12,
       "alarmType": "ALARM_TYPE_DISPLACEMENT_LIMIT",
       "transition": "ALARM_TRANSITION_RECOVERED",
-      "timestampS": "1734567910",
+      "ts": "1734567910",
       "displacement": {
         "targetId": "T01",
         "metric": "ALARM_METRIC_DX",
@@ -195,7 +195,7 @@
       "ruleId": 12,
       "alarmType": "ALARM_TYPE_DISPLACEMENT_LIMIT",
       "transition": "ALARM_TRANSITION_CANCELLED",
-      "timestampS": "1734567915",
+      "ts": "1734567915",
       "displacement": {
         "targetId": "T01",
         "metric": "ALARM_METRIC_DX",

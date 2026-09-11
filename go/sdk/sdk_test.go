@@ -139,7 +139,7 @@ func TestDecodeEvidenceAsTypedEvent(t *testing.T) {
 	codec := Codec{Format: Protobuf}
 	payload, _ := proto.Marshal(&vdmmqttv1.Event{
 		SchemaVersion: 1,
-		TimestampS:    1721805600,
+		Ts:            1721805600,
 		EventType:     vdmmqttv1.EventType_EVENT_TYPE_ALARM_EVIDENCE,
 		Detail: &vdmmqttv1.Event_AlarmEvidence{AlarmEvidence: &vdmmqttv1.AlarmEvidenceEventDetail{
 			EventId: 9001,

@@ -58,6 +58,6 @@ class AlarmContractTest(unittest.TestCase):
                             decoded.value.HasField("level"), "level" in value
                         )
                     self.assertEqual(
-                        fields.get("timestampS", fields.get("ts")),
-                        value.get("timestampS", value.get("ts")),
+                        fields["ts"],
+                        value["ts"],
                     )
