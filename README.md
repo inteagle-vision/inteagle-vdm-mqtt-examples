@@ -183,6 +183,8 @@ docker compose run --rm --no-deps javascript-data --query-attributes
 
 `alarmId` 关联一次告警生命周期，`eventId` 关联其中一次状态变化。等级为 `ALERT < ALARM < ACTION`；`RECOVERED`、`CANCELLED` 结束生命周期且省略等级。
 
+客户平台不应对收到的每条 `3A` 消息直接发送短信、电话或推送。MQTT QoS 1 允许重复投递，设备重连时还会发送 `SYNCED` 当前状态。请按[告警通知与防重复策略](examples/alarms/README.md#告警通知与防重复)持久化去重，再决定是否通知；仓库提供了可运行的 [Java SQLite 参考实现](java/src/main/java/com/inteagle/examples/vdm/AlarmNotificationConsumer.java)。
+
 <a id="alarm-evidence"></a>
 
 ## 告警抓拍接收与确认
@@ -253,11 +255,11 @@ sha256sum --check proto/SHA256SUMS
 
 ## 代码入口
 
-| 语言 | 接收位移 / 属性 | 告警配置 | 抓拍接收 |
-| --- | --- | --- | --- |
-| Python | [receive_data.py](python/receive_data.py) | [alarm_rpc.py](python/alarm_rpc.py) | [evidence_receiver.py](python/evidence_receiver.py) |
-| Go | [receive-data](go/cmd/receive-data/main.go) | [alarm-rpc](go/cmd/alarm-rpc/main.go) | [evidence-receiver](go/cmd/evidence-receiver/main.go) |
-| Java | [ReceiveData](java/src/main/java/com/inteagle/examples/vdm/ReceiveData.java) | [AlarmRpc](java/src/main/java/com/inteagle/examples/vdm/AlarmRpc.java) | [EvidenceReceiver](java/src/main/java/com/inteagle/examples/vdm/EvidenceReceiver.java) |
-| JavaScript | [receive_data.js](javascript/receive_data.js) | [alarm_rpc.js](javascript/alarm_rpc.js) | [evidence_receiver.js](javascript/evidence_receiver.js) |
+| 语言 | 接收位移 / 属性 | 告警配置 | 告警通知 | 抓拍接收 |
+| --- | --- | --- | --- | --- |
+| Python | [receive_data.py](python/receive_data.py) | [alarm_rpc.py](python/alarm_rpc.py) | [alarm_notifications.py](python/alarm_notifications.py) | [evidence_receiver.py](python/evidence_receiver.py) |
+| Go | [receive-data](go/cmd/receive-data/main.go) | [alarm-rpc](go/cmd/alarm-rpc/main.go) | — | [evidence-receiver](go/cmd/evidence-receiver/main.go) |
+| Java | [ReceiveData](java/src/main/java/com/inteagle/examples/vdm/ReceiveData.java) | [AlarmRpc](java/src/main/java/com/inteagle/examples/vdm/AlarmRpc.java) | [AlarmNotificationConsumer](java/src/main/java/com/inteagle/examples/vdm/AlarmNotificationConsumer.java) | [EvidenceReceiver](java/src/main/java/com/inteagle/examples/vdm/EvidenceReceiver.java) |
+| JavaScript | [receive_data.js](javascript/receive_data.js) | [alarm_rpc.js](javascript/alarm_rpc.js) | — | [evidence_receiver.js](javascript/evidence_receiver.js) |
 
 CI 回归测试保存在 [tests](tests) 与各语言测试目录，用于验证编码、边界和重组行为。设备接通以实际设备的 RPC 响应和数据上报为准。
