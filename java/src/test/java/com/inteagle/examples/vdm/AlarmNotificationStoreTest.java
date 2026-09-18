@@ -99,6 +99,26 @@ final class AlarmNotificationStoreTest {
     }
   }
 
+  @Test
+  void workerLeaseControlsDeliveryAndRetry() throws Exception {
+    try (AlarmNotificationStore store =
+        new AlarmNotificationStore(temporaryDirectory.resolve("outbox.sqlite3"))) {
+      store.process("DEVICE-A", event("501", "101", "TRIGGERED", "ALERT"));
+
+      AlarmNotificationStore.Notification first =
+          store.claimNext("worker-one", java.time.Duration.ofMinutes(1));
+      assertEquals("DEVICE-A:501:ALARM_TRIGGERED", first.idempotencyKey());
+      assertEquals(null, store.claimNext("worker-two", java.time.Duration.ofMinutes(1)));
+
+      store.retryLater(first, java.time.Duration.ZERO, "temporary webhook failure");
+      AlarmNotificationStore.Notification retried =
+          store.claimNext("worker-two", java.time.Duration.ofMinutes(1));
+      assertEquals("worker-two", retried.deliveryToken());
+      store.markSent(retried);
+      assertEquals(null, store.claimNext("worker-three", java.time.Duration.ofMinutes(1)));
+    }
+  }
+
   private static JsonNode event(
       String eventId, String alarmId, String transition, String level) {
     var node = MAPPER.createObjectNode()

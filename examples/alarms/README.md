@@ -78,7 +78,18 @@ java -cp target/vdm-mqtt-consumer-1.0.0.jar \
   --database ./alarm-notifications.sqlite3
 ```
 
-该入口把事件去重、告警生命周期和待发送通知写入同一个 SQLite 事务。示例只创建 outbox，客户应由后台任务读取 `PENDING` 记录并调用自己的短信、电话或 App 推送服务。调用通知服务时继续使用 `deviceId:eventId:notification` 作为幂等键；发送成功后再把 outbox 记录标为已发送。
+该入口把事件去重、告警生命周期和待发送通知写入同一个 SQLite 事务。再启动
+[NotificationOutboxWorker](../../java/src/main/java/com/inteagle/examples/vdm/NotificationOutboxWorker.java)
+把 `PENDING` 记录交给客户的 HTTP 通知服务：
+
+```bash
+export NOTIFICATION_WEBHOOK_URL=https://customer.example.com/api/v1/vdm-alarm-notifications
+java -cp target/vdm-mqtt-consumer-1.0.0.jar \
+  com.inteagle.examples.vdm.NotificationOutboxWorker \
+  --database ./alarm-notifications.sqlite3
+```
+
+Worker 成功收到任意 `2xx` 响应后才标记 `SENT`；网络错误和非 `2xx` 会保留记录并在 30 秒后重试。调试单条待发送记录可加 `--once`。
 
 ## 配置步骤
 
@@ -157,6 +168,23 @@ java -cp target/vdm-mqtt-consumer-1.0.0.jar \
 ```
 
 日志中的 `action` 有三种：`NOTIFY` 表示通知已安全写入 outbox，`STATE_ONLY` 表示仅更新状态，`DUPLICATE` 表示已处理过。程序重启后仍使用同一个数据库，因此不会丢失去重记录。
+
+### HTTP 通知发送示例
+
+[NotificationOutboxWorker](../../java/src/main/java/com/inteagle/examples/vdm/NotificationOutboxWorker.java)
+是可直接运行的 outbox 消费者。它向 `NOTIFICATION_WEBHOOK_URL` 发送 `POST`，请求示例：
+
+```http
+POST /api/v1/vdm-alarm-notifications HTTP/1.1
+Content-Type: application/json
+Idempotency-Key: DEVICE001:9007199254740993:ALARM_TRIGGERED
+
+{"deviceId":"DEVICE001","eventId":"9007199254740993","alarmId":"9007199254740900","notification":"ALARM_TRIGGERED"}
+```
+
+客户 Webhook 必须先按 `Idempotency-Key` 持久化去重，再返回 `2xx` 并触发短信、电话或 App 推送。原因是外部调用成功、但 Worker 尚未来得及写入 `SENT` 时发生进程崩溃，Worker 会重试该请求；幂等键使这次重试不会产生第二条外部通知。不要在接收到 Webhook 后再异步落库并立刻返回 `2xx`。
+
+通知 Worker 与 MQTT Consumer 可部署为两个进程，使用同一个 SQLite 文件；量产平台建议把这三张表迁移到 MySQL/PostgreSQL，并沿用唯一键和 lease 语义。
 
 仓库还提供轻量的 [Python SQLite 演示](../../python/alarm_notifications.py)，它用现有 [events.json](events.json) 依次模拟首次触发、QoS 1 重复、重连同步、升级、恢复和终态重复：
 

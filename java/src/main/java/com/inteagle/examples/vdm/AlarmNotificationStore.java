@@ -9,6 +9,7 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.time.Duration;
 import java.util.Locale;
 import java.util.Objects;
 
@@ -27,6 +28,14 @@ public final class AlarmNotificationStore implements AutoCloseable {
   }
 
   public record Decision(Action action, String notification, String reason) {}
+
+  /** A leased outbox item. Only the holder of {@code deliveryToken} may complete or retry it. */
+  public record Notification(
+      String deviceId, String eventId, String alarmId, String notification, String deliveryToken) {
+    public String idempotencyKey() {
+      return deviceId + ":" + eventId + ":" + notification;
+    }
+  }
 
   private record AlarmEvent(String eventId, String alarmId, String transition, String level) {}
 
@@ -122,10 +131,38 @@ public final class AlarmNotificationStore implements AutoCloseable {
             event_id TEXT NOT NULL,
             notification TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT 'PENDING',
+            delivery_token TEXT,
+            locked_until TEXT,
+            next_attempt_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT,
+            sent_at TEXT,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (device_id, event_id, notification)
           )
           """);
+      // Existing databases created by an older example do not have these delivery columns.
+      addColumnIfMissing(statement, "notification_outbox", "delivery_token TEXT");
+      addColumnIfMissing(statement, "notification_outbox", "locked_until TEXT");
+      addColumnIfMissing(statement, "notification_outbox", "next_attempt_at TEXT");
+      addColumnIfMissing(statement, "notification_outbox", "attempts INTEGER NOT NULL DEFAULT 0");
+      addColumnIfMissing(statement, "notification_outbox", "last_error TEXT");
+      addColumnIfMissing(statement, "notification_outbox", "sent_at TEXT");
+      statement.executeUpdate(
+          "UPDATE notification_outbox SET next_attempt_at = CURRENT_TIMESTAMP "
+              + "WHERE next_attempt_at IS NULL");
+    }
+  }
+
+  private static void addColumnIfMissing(Statement statement, String table, String definition)
+      throws SQLException {
+    try {
+      statement.execute("ALTER TABLE " + table + " ADD COLUMN " + definition);
+    } catch (SQLException error) {
+      // SQLite reports a duplicate column for a database already at the current schema.
+      if (!error.getMessage().toLowerCase(Locale.ROOT).contains("duplicate column name")) {
+        throw error;
+      }
     }
   }
 
@@ -187,6 +224,130 @@ public final class AlarmNotificationStore implements AutoCloseable {
       statement.setString(2, eventId);
       statement.setString(3, notification);
       statement.executeUpdate();
+    }
+  }
+
+  /**
+   * Atomically lease one ready notification for an external delivery worker.
+   *
+   * <p>A lease can be reclaimed after {@code leaseDuration}, which handles a worker crash. The
+   * external delivery call must use {@link Notification#idempotencyKey()} because a crash after a
+   * remote success but before {@link #markSent(Notification)} is necessarily at-least-once.
+   */
+  public synchronized Notification claimNext(String deliveryToken, Duration leaseDuration)
+      throws SQLException {
+    if (deliveryToken == null || deliveryToken.isBlank()) {
+      throw new IllegalArgumentException("deliveryToken must not be blank");
+    }
+    if (leaseDuration == null || leaseDuration.isZero() || leaseDuration.isNegative()) {
+      throw new IllegalArgumentException("leaseDuration must be positive");
+    }
+    long leaseSeconds = Math.max(1, leaseDuration.toSeconds());
+    boolean oldAutoCommit = connection.getAutoCommit();
+    connection.setAutoCommit(false);
+    try {
+      Notification candidate = findReadyNotification();
+      if (candidate == null) {
+        connection.commit();
+        return null;
+      }
+      try (PreparedStatement statement = connection.prepareStatement("""
+          UPDATE notification_outbox
+          SET status = 'SENDING', delivery_token = ?,
+              locked_until = datetime('now', ?), attempts = attempts + 1
+          WHERE device_id = ? AND event_id = ? AND notification = ?
+            AND (status = 'PENDING' AND COALESCE(next_attempt_at, CURRENT_TIMESTAMP) <= CURRENT_TIMESTAMP
+                 OR status = 'SENDING' AND locked_until <= CURRENT_TIMESTAMP)
+          """)) {
+        statement.setString(1, deliveryToken);
+        statement.setString(2, "+" + leaseSeconds + " seconds");
+        statement.setString(3, candidate.deviceId());
+        statement.setString(4, candidate.eventId());
+        statement.setString(5, candidate.notification());
+        if (statement.executeUpdate() != 1) {
+          connection.rollback();
+          return null;
+        }
+      }
+      connection.commit();
+      return new Notification(
+          candidate.deviceId(), candidate.eventId(), candidate.alarmId(), candidate.notification(),
+          deliveryToken);
+    } catch (SQLException | RuntimeException error) {
+      connection.rollback();
+      throw error;
+    } finally {
+      connection.setAutoCommit(oldAutoCommit);
+    }
+  }
+
+  /** Mark a successfully delivered notification as terminal. */
+  public synchronized void markSent(Notification notification) throws SQLException {
+    updateLeasedNotification(notification, """
+        UPDATE notification_outbox
+        SET status = 'SENT', sent_at = CURRENT_TIMESTAMP, locked_until = NULL, last_error = NULL
+        WHERE device_id = ? AND event_id = ? AND notification = ?
+          AND status = 'SENDING' AND delivery_token = ?
+        """);
+  }
+
+  /** Release a failed notification for a later retry. */
+  public synchronized void retryLater(Notification notification, Duration delay, String error)
+      throws SQLException {
+    if (delay == null || delay.isNegative()) {
+      throw new IllegalArgumentException("delay must not be negative");
+    }
+    long delaySeconds = Math.max(0, delay.toSeconds());
+    try (PreparedStatement statement = connection.prepareStatement("""
+        UPDATE notification_outbox
+        SET status = 'PENDING', delivery_token = NULL, locked_until = NULL,
+            next_attempt_at = datetime('now', ?), last_error = ?
+        WHERE device_id = ? AND event_id = ? AND notification = ?
+          AND status = 'SENDING' AND delivery_token = ?
+        """)) {
+      statement.setString(1, "+" + delaySeconds + " seconds");
+      statement.setString(2, error == null ? "delivery failed" : error.substring(0, Math.min(500, error.length())));
+      statement.setString(3, notification.deviceId());
+      statement.setString(4, notification.eventId());
+      statement.setString(5, notification.notification());
+      statement.setString(6, notification.deliveryToken());
+      if (statement.executeUpdate() != 1) {
+        throw new IllegalStateException("notification lease was lost before retry");
+      }
+    }
+  }
+
+  private Notification findReadyNotification() throws SQLException {
+    try (PreparedStatement statement = connection.prepareStatement("""
+        SELECT outbox.device_id, outbox.event_id, events.alarm_id, outbox.notification
+        FROM notification_outbox AS outbox
+        JOIN alarm_events AS events
+          ON events.device_id = outbox.device_id AND events.event_id = outbox.event_id
+        WHERE (outbox.status = 'PENDING'
+               AND COALESCE(outbox.next_attempt_at, CURRENT_TIMESTAMP) <= CURRENT_TIMESTAMP)
+           OR (outbox.status = 'SENDING' AND outbox.locked_until <= CURRENT_TIMESTAMP)
+        ORDER BY outbox.created_at, outbox.event_id
+        LIMIT 1
+        """)) {
+      try (ResultSet row = statement.executeQuery()) {
+        return row.next()
+            ? new Notification(
+                row.getString("device_id"), row.getString("event_id"),
+                row.getString("alarm_id"), row.getString("notification"), null)
+            : null;
+      }
+    }
+  }
+
+  private void updateLeasedNotification(Notification notification, String sql) throws SQLException {
+    try (PreparedStatement statement = connection.prepareStatement(sql)) {
+      statement.setString(1, notification.deviceId());
+      statement.setString(2, notification.eventId());
+      statement.setString(3, notification.notification());
+      statement.setString(4, notification.deliveryToken());
+      if (statement.executeUpdate() != 1) {
+        throw new IllegalStateException("notification lease was lost before completion");
+      }
     }
   }
 
