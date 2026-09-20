@@ -1,10 +1,15 @@
 FROM node:22-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3
 
+RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app/javascript
 COPY javascript/package.json javascript/package-lock.json ./
-RUN npm ci --include=dev --ignore-scripts
+RUN npm ci --include=dev
 
 COPY proto /app/proto
+COPY contracts /app/contracts
+COPY tests/fixtures /app/tests/fixtures
+COPY javascript/service ./service
 COPY javascript/sdk ./sdk
 COPY examples /app/examples
 COPY javascript/tests ./tests

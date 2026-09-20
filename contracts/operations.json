@@ -1,0 +1,233 @@
+[
+  {
+    "route": "device/attributes/query",
+    "method": "getAttr",
+    "module": "device",
+    "mode": "read",
+    "capability": "-"
+  },
+  {
+    "route": "device/attributes/update",
+    "method": "setAttr",
+    "module": "device",
+    "mode": "write",
+    "capability": "-"
+  },
+  {
+    "route": "device/reboot",
+    "method": "reboot",
+    "module": "device",
+    "mode": "async",
+    "capability": "-"
+  },
+  {
+    "route": "device/time/sync",
+    "method": "syncTime",
+    "module": "device",
+    "mode": "async",
+    "capability": "-"
+  },
+  {
+    "route": "targets/query",
+    "method": "getTargets",
+    "module": "targets",
+    "mode": "read",
+    "capability": "-"
+  },
+  {
+    "route": "targets/add",
+    "method": "addTargets",
+    "module": "targets",
+    "mode": "write",
+    "capability": "-"
+  },
+  {
+    "route": "targets/update",
+    "method": "setTargets",
+    "module": "targets",
+    "mode": "write",
+    "capability": "-"
+  },
+  {
+    "route": "targets/delete",
+    "method": "deleteTargets",
+    "module": "targets",
+    "mode": "write",
+    "capability": "-"
+  },
+  {
+    "route": "targets/initialize",
+    "method": "initRefTargets",
+    "module": "targets",
+    "mode": "async",
+    "capability": "-"
+  },
+  {
+    "route": "measurement/start",
+    "method": "startMeasurement",
+    "module": "measurement",
+    "mode": "write",
+    "capability": "-"
+  },
+  {
+    "route": "measurement/stop",
+    "method": "stopMeasurement",
+    "module": "measurement",
+    "mode": "write",
+    "capability": "-"
+  },
+  {
+    "route": "measurement/sync",
+    "method": "syncTelemetry",
+    "module": "measurement",
+    "mode": "async",
+    "capability": "-"
+  },
+  {
+    "route": "measurement/sync/status",
+    "method": "getSyncStatus",
+    "module": "measurement",
+    "mode": "read",
+    "capability": "-"
+  },
+  {
+    "route": "measurement/sync/cancel",
+    "method": "cancelSync",
+    "module": "measurement",
+    "mode": "write",
+    "capability": "-"
+  },
+  {
+    "route": "device/lights/query",
+    "method": "getLightLevel",
+    "module": "device",
+    "mode": "read",
+    "capability": "-"
+  },
+  {
+    "route": "device/lights/update",
+    "method": "setLightLevel",
+    "module": "device",
+    "mode": "write",
+    "capability": "-"
+  },
+  {
+    "route": "evidence/snapshot",
+    "method": "snapshot",
+    "module": "evidence",
+    "mode": "async",
+    "capability": "-"
+  },
+  {
+    "route": "device/isp",
+    "method": "ispCtl",
+    "module": "device",
+    "mode": "write",
+    "capability": "-"
+  },
+  {
+    "route": "device/motor/angle/query",
+    "method": "getMotorAngle",
+    "module": "device",
+    "mode": "read",
+    "capability": "motor"
+  },
+  {
+    "route": "device/motor/angle/update",
+    "method": "setMotorAngle",
+    "module": "device",
+    "mode": "async",
+    "capability": "motor"
+  },
+  {
+    "route": "device/motor/zero",
+    "method": "setMotorZero",
+    "module": "device",
+    "mode": "write",
+    "capability": "motor"
+  },
+  {
+    "route": "device/motor/enable",
+    "method": "enableMotor",
+    "module": "device",
+    "mode": "write",
+    "capability": "motor"
+  },
+  {
+    "route": "device/motor/disable",
+    "method": "disableMotor",
+    "module": "device",
+    "mode": "write",
+    "capability": "motor"
+  },
+  {
+    "route": "device/cruise/query",
+    "method": "getCruisePaths",
+    "module": "device",
+    "mode": "read",
+    "capability": "motor"
+  },
+  {
+    "route": "alarms/capabilities",
+    "method": "getAlarmCaps",
+    "module": "alarms",
+    "mode": "read",
+    "capability": "-"
+  },
+  {
+    "route": "alarms/rules/query",
+    "method": "listAlarmRules",
+    "module": "alarms",
+    "mode": "read",
+    "capability": "-"
+  },
+  {
+    "route": "alarms/rules/apply",
+    "method": "applyAlarmRules",
+    "module": "alarms",
+    "mode": "write",
+    "capability": "-"
+  },
+  {
+    "route": "alarms/state",
+    "method": "getAlarmState",
+    "module": "alarms",
+    "mode": "read",
+    "capability": "-"
+  },
+  {
+    "route": "alarms/history",
+    "method": "listAlarmHistory",
+    "module": "alarms",
+    "mode": "read",
+    "capability": "-"
+  },
+  {
+    "route": "alarms/events",
+    "method": "listAlarmEvents",
+    "module": "alarms",
+    "mode": "read",
+    "capability": "-"
+  },
+  {
+    "route": "evidence/status",
+    "method": "getEvidenceStatus",
+    "module": "evidence",
+    "mode": "read",
+    "capability": "-"
+  },
+  {
+    "route": "evidence/retry",
+    "method": "retryEvidence",
+    "module": "evidence",
+    "mode": "async",
+    "capability": "-"
+  },
+  {
+    "route": "evidence/ack",
+    "method": "ackEvidencePackage",
+    "module": "evidence",
+    "mode": "write",
+    "capability": "-"
+  }
+]

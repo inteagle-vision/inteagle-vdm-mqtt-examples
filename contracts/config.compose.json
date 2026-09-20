@@ -1,0 +1,23 @@
+{
+  "connections": [
+    {
+      "id": "local",
+      "host": "broker",
+      "port": 1883,
+      "usernameEnv": "MQTT_USERNAME",
+      "passwordEnv": "MQTT_PASSWORD",
+      "devices": [
+        {
+          "id": "DEMO",
+          "format": "json",
+          "capabilities": []
+        }
+      ]
+    }
+  ],
+  "rpcTimeoutMs": 10000,
+  "notificationMaxAgeSeconds": 300,
+  "maxInboxRows": 10000,
+  "retentionDays": 7,
+  "maxEvidenceBytes": 268435456
+}

@@ -27,3 +27,5 @@ javascript/node_modules
 
 # Captures received from real devices
 evidence/
+**/.venv
+**/data

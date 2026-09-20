@@ -1,0 +1,418 @@
+[
+  {
+    "method": "getAttr",
+    "route": "device/attributes/query",
+    "json": {},
+    "protobuf": {},
+    "reqId": 17,
+    "protobufHex": "080110115200"
+  },
+  {
+    "method": "setAttr",
+    "route": "device/attributes/update",
+    "json": {
+      "reportMetrics": [
+        "dx",
+        "dy"
+      ]
+    },
+    "protobuf": {
+      "reportMetrics": {
+        "values": [
+          "REPORT_METRIC_DX",
+          "REPORT_METRIC_DY"
+        ]
+      }
+    },
+    "reqId": 17,
+    "protobufHex": "080110115a0612040a020102"
+  },
+  {
+    "method": "reboot",
+    "route": "device/reboot",
+    "json": {},
+    "protobuf": {},
+    "reqId": 17,
+    "protobufHex": "080110116200"
+  },
+  {
+    "method": "syncTime",
+    "route": "device/time/sync",
+    "json": {},
+    "protobuf": {},
+    "reqId": 17,
+    "protobufHex": "080110116a00"
+  },
+  {
+    "method": "getTargets",
+    "route": "targets/query",
+    "json": {},
+    "protobuf": {},
+    "reqId": 17,
+    "protobufHex": "08011011b20100"
+  },
+  {
+    "method": "addTargets",
+    "route": "targets/add",
+    "json": {
+      "targets": [
+        {
+          "targetId": "T01",
+          "sensorId": 0,
+          "roi": {
+            "x": 10,
+            "y": 10,
+            "width": 100,
+            "height": 100
+          },
+          "distance": 10
+        }
+      ]
+    },
+    "protobuf": {
+      "targets": [
+        {
+          "targetId": "T01",
+          "sensorId": 0,
+          "roi": {
+            "x": 10,
+            "y": 10,
+            "width": 100,
+            "height": 100
+          },
+          "distanceM": 10
+        }
+      ]
+    },
+    "reqId": 17,
+    "protobufHex": "08011011aa01180a160a0354303110001a08080a100a186420642500002041"
+  },
+  {
+    "method": "setTargets",
+    "route": "targets/update",
+    "json": {
+      "targets": [
+        {
+          "targetId": "T01",
+          "skipMeasurement": false
+        }
+      ]
+    },
+    "protobuf": {
+      "targets": [
+        {
+          "targetId": "T01",
+          "skipMeasurement": false
+        }
+      ]
+    },
+    "reqId": 17,
+    "protobufHex": "08011011ba01090a070a035430313800"
+  },
+  {
+    "method": "deleteTargets",
+    "route": "targets/delete",
+    "json": {
+      "targetIds": [
+        "T01"
+      ]
+    },
+    "protobuf": {
+      "targetIds": [
+        "T01"
+      ]
+    },
+    "reqId": 17,
+    "protobufHex": "08011011c201050a03543031"
+  },
+  {
+    "method": "initRefTargets",
+    "route": "targets/initialize",
+    "json": {
+      "targets": [
+        {
+          "targetId": "T01"
+        }
+      ]
+    },
+    "protobuf": {
+      "targets": [
+        {
+          "targetId": "T01"
+        }
+      ]
+    },
+    "reqId": 17,
+    "protobufHex": "08011011a201070a050a03543031"
+  },
+  {
+    "method": "startMeasurement",
+    "route": "measurement/start",
+    "json": {},
+    "protobuf": {},
+    "reqId": 17,
+    "protobufHex": "08011011f20100"
+  },
+  {
+    "method": "stopMeasurement",
+    "route": "measurement/stop",
+    "json": {},
+    "protobuf": {},
+    "reqId": 17,
+    "protobufHex": "08011011fa0100"
+  },
+  {
+    "method": "syncTelemetry",
+    "route": "measurement/sync",
+    "json": {
+      "type": "displacement",
+      "startTs": 1700000000,
+      "endTs": 1700000060
+    },
+    "protobuf": {
+      "telemetryType": "TELEMETRY_SYNC_TYPE_DISPLACEMENT",
+      "startTs": "1700000000",
+      "endTs": "1700000060"
+    },
+    "reqId": 17,
+    "protobufHex": "08011011fa050e08011080e2cfaa0618bce2cfaa06"
+  },
+  {
+    "method": "getSyncStatus",
+    "route": "measurement/sync/status",
+    "json": {
+      "jobId": "SAMPLE_JOB"
+    },
+    "protobuf": {
+      "jobId": "SAMPLE_JOB"
+    },
+    "reqId": 17,
+    "protobufHex": "0801101182060c0a0a53414d504c455f4a4f42"
+  },
+  {
+    "method": "cancelSync",
+    "route": "measurement/sync/cancel",
+    "json": {
+      "jobId": "SAMPLE_JOB"
+    },
+    "protobuf": {
+      "jobId": "SAMPLE_JOB"
+    },
+    "reqId": 17,
+    "protobufHex": "080110118a060c0a0a53414d504c455f4a4f42"
+  },
+  {
+    "method": "getLightLevel",
+    "route": "device/lights/query",
+    "json": {},
+    "protobuf": {},
+    "reqId": 17,
+    "protobufHex": "080110118a0200"
+  },
+  {
+    "method": "setLightLevel",
+    "route": "device/lights/update",
+    "json": {
+      "level": 1
+    },
+    "protobuf": {
+      "allLightsLevel": 1
+    },
+    "reqId": 17,
+    "protobufHex": "080110118202020801"
+  },
+  {
+    "method": "snapshot",
+    "route": "evidence/snapshot",
+    "json": {},
+    "protobuf": {},
+    "reqId": 17,
+    "protobufHex": "08011011920200"
+  },
+  {
+    "method": "ispCtl",
+    "route": "device/isp",
+    "json": {
+      "action": "getStatus"
+    },
+    "protobuf": {
+      "action": "getStatus"
+    },
+    "reqId": 17,
+    "protobufHex": "0801101192030b0a09676574537461747573"
+  },
+  {
+    "method": "getMotorAngle",
+    "route": "device/motor/angle/query",
+    "json": {},
+    "protobuf": {},
+    "reqId": 17,
+    "protobufHex": "08011011ea0300"
+  },
+  {
+    "method": "setMotorAngle",
+    "route": "device/motor/angle/update",
+    "json": {
+      "pan": 0.0,
+      "tilt": 0.0
+    },
+    "protobuf": {
+      "panDegrees": 0.0,
+      "tiltDegrees": 0.0
+    },
+    "reqId": 17,
+    "protobufHex": "08011011e2030a0d000000001500000000"
+  },
+  {
+    "method": "setMotorZero",
+    "route": "device/motor/zero",
+    "json": {
+      "pan": true,
+      "tilt": true
+    },
+    "protobuf": {
+      "pan": true,
+      "tilt": true
+    },
+    "reqId": 17,
+    "protobufHex": "08011011f2030408011001"
+  },
+  {
+    "method": "enableMotor",
+    "route": "device/motor/enable",
+    "json": {},
+    "protobuf": {},
+    "reqId": 17,
+    "protobufHex": "08011011fa0300"
+  },
+  {
+    "method": "disableMotor",
+    "route": "device/motor/disable",
+    "json": {},
+    "protobuf": {},
+    "reqId": 17,
+    "protobufHex": "08011011820400"
+  },
+  {
+    "method": "getCruisePaths",
+    "route": "device/cruise/query",
+    "json": {
+      "includeTargets": true
+    },
+    "protobuf": {
+      "includeTargets": true
+    },
+    "reqId": 17,
+    "protobufHex": "08011011b204020801"
+  },
+  {
+    "method": "getAlarmCaps",
+    "route": "alarms/capabilities",
+    "json": {},
+    "protobuf": {},
+    "reqId": 17,
+    "protobufHex": "08011011d20500"
+  },
+  {
+    "method": "listAlarmRules",
+    "route": "alarms/rules/query",
+    "json": {},
+    "protobuf": {},
+    "reqId": 17,
+    "protobufHex": "08011011da0500"
+  },
+  {
+    "method": "applyAlarmRules",
+    "route": "alarms/rules/apply",
+    "json": {
+      "deleteIds": [
+        999
+      ]
+    },
+    "protobuf": {
+      "deleteIds": [
+        999
+      ]
+    },
+    "reqId": 17,
+    "protobufHex": "08011011e205041202e707"
+  },
+  {
+    "method": "getAlarmState",
+    "route": "alarms/state",
+    "json": {},
+    "protobuf": {},
+    "reqId": 17,
+    "protobufHex": "08011011ea0500"
+  },
+  {
+    "method": "listAlarmHistory",
+    "route": "alarms/history",
+    "json": {
+      "limit": 1
+    },
+    "protobuf": {
+      "limit": 1
+    },
+    "reqId": 17,
+    "protobufHex": "08011011f205021001"
+  },
+  {
+    "method": "listAlarmEvents",
+    "route": "alarms/events",
+    "json": {
+      "page": 1,
+      "pageSize": 20
+    },
+    "protobuf": {
+      "page": 1,
+      "pageSize": 20
+    },
+    "reqId": 17,
+    "protobufHex": "0801101192060408011014"
+  },
+  {
+    "method": "getEvidenceStatus",
+    "route": "evidence/status",
+    "json": {
+      "eventId": "1",
+      "kind": "SNAPSHOT"
+    },
+    "protobuf": {
+      "eventId": "1",
+      "kind": "EVIDENCE_KIND_SNAPSHOT"
+    },
+    "reqId": 17,
+    "protobufHex": "0801101182050408011001"
+  },
+  {
+    "method": "retryEvidence",
+    "route": "evidence/retry",
+    "json": {
+      "eventId": "9007199254740993",
+      "kind": "SNAPSHOT"
+    },
+    "protobuf": {
+      "eventId": "9007199254740993",
+      "kind": "EVIDENCE_KIND_SNAPSHOT"
+    },
+    "reqId": 17,
+    "protobufHex": "080110118a050b0881808080808080101001"
+  },
+  {
+    "method": "ackEvidencePackage",
+    "route": "evidence/ack",
+    "json": {
+      "eventId": "9007199254740993",
+      "kind": "SNAPSHOT",
+      "packageSha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "protobuf": {
+      "eventId": "9007199254740993",
+      "kind": "EVIDENCE_KIND_SNAPSHOT",
+      "packageSha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "reqId": 17,
+    "protobufHex": "0801101192054d08818080808080801010011a4030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030"
+  }
+]

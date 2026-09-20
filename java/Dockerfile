@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1.7
 
 FROM maven:3.9.9-eclipse-temurin-21@sha256:3a4ab3276a087bf276f79cae96b1af04f53731bec53fb2e651aca79e4b10211e AS builder
 
@@ -9,6 +8,8 @@ RUN --mount=type=cache,target=/root/.m2 \
     mvn --batch-mode --no-transfer-progress dependency:go-offline
 
 WORKDIR /src
+COPY contracts /src/contracts
+COPY tests/fixtures /src/tests/fixtures
 COPY proto /src/proto
 COPY examples /src/examples
 COPY java/src /src/java/src

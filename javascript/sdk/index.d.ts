@@ -28,6 +28,10 @@ export type PublicRpcMethod =
   | "listAlarmRules"
   | "applyAlarmRules"
   | "getAlarmState"
+  | "listAlarmEvents"
+  | "syncTelemetry"
+  | "getSyncStatus"
+  | "cancelSync"
   | "listAlarmHistory";
 
 export class VdmTopics {
@@ -103,6 +107,7 @@ export class VdmCodec {
 }
 
 export interface VdmMqttClientConfig {
+  durableReceive?: (topic: string, payload: Uint8Array, qos: number) => void;
   host: string;
   port: number;
   topics: VdmTopics;

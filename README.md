@@ -2,6 +2,43 @@
 
 系统集成商平台通过 MQTT Broker 接入设备。本仓库提供 Python、Go、Java 和 JavaScript 的数据接收、属性查询、告警配置及抓拍接收代码，支持 Protobuf（推荐）和 JSON。
 
+## 完整接入服务（推荐客户工程）
+
+四种语言现在都有 **SDK → 单业务示例 → 完整 REST 服务**，共同提供 33 个具名业务接口、多 Broker/多设备、SQLite 持久化、告警通知与图像确认。
+Java 使用 Spring Boot；Python 使用 FastAPI；Go 使用 net/http；JavaScript 使用 Express。
+
+| 语言 | 独立启动与配置 | 完整服务 Compose profile | 本机映射端口 |
+|---|---|---|---|
+| Python | [服务说明](python/README-service.md) | python | 8081 |
+| Go | [服务说明](go/README-service.md) | go | 8082 |
+| Java | [服务说明](java/README-service.md) | java | 8083 |
+| JavaScript | [服务说明](javascript/README-service.md) | javascript | 8084 |
+
+从仓库根目录选一种语言启动：
+
+```sh
+cp contracts/config.compose.json /tmp/vdm-service.json
+# 编辑文件中的 Broker、设备 ID、format；凭据只放环境变量。
+export VDM_SERVICE_CONFIG=/tmp/vdm-service.json
+export VDM_API_TOKEN="$(openssl rand -hex 32)"
+docker compose -f compose.services.yaml --profile python up --build -d
+curl http://127.0.0.1:8081/health
+curl -X POST http://127.0.0.1:8081/v1/connections/local/devices/DEMO/device/attributes/query \
+  -H "Authorization: Bearer $VDM_API_TOKEN" -H 'Content-Type: application/json' -d '{"params":{}}'
+curl http://127.0.0.1:8081/v1/connections/local/devices/DEMO/latest \
+  -H "Authorization: Bearer $VDM_API_TOKEN"
+```
+
+配置里的 `broker` 是 Compose 内 Broker；接入实际设备时填写设备已连接的 Broker 或将设备接入该 Broker。示例 ID `DEMO` 须替换为真实 ID。默认 Broker 和 HTTP 端口只映射到本机；远程部署需要访问保护和 TLS 入口。
+每种服务独立持久卷，不要同时连接同一目录。运行同一语言的多个实例时须为各实例使用不同的连接配置 ID，避免 MQTT client ID 冲突。
+
+[共同 OpenAPI](contracts/openapi.json) · [请求示例（JSON/ProtoJSON）](tests/fixtures/rpc-cases.json) · [接口/型号覆盖](docs/coverage.md) · [旧入口兼容](docs/compatibility.md) · [业务流程与核对](docs/workflows.md) · [排障与消息流程](docs/troubleshooting.md) · [验收记录](docs/acceptance.md)
+
+REST 等待设备 RPC 响应；`202 accepted` 仅表示设备受理，需用原有事件或查询确认。`504` 表示结果未知，修改操作不会自动重发。JSON 与 Protobuf 字段/枚举差异按样例选择，设备 wire 协议保持不变。
+QoS1 消息持久化后才确认；QoS0 无可靠补偿保证。告警通知使用持久化 Webhook 任务和稳定幂等键，下游仍须去重。
+
+以下保留原单业务示例的运行方式。
+
 1. [接入系统集成商 MQTT Broker](#quick-test)。
 2. [接收位移](#receive-data)，再[查询设备属性](#query-attributes)。
 3. [配置告警](examples/alarms/README.md)，接收并确认[告警抓拍](#alarm-evidence)。
@@ -239,7 +276,7 @@ export VDM_EVIDENCE_DIR=./evidence
 
 ## SDK 能力
 
-各语言均提供消息解析、29 个 RPC 的请求构造与响应关联、重连订阅、告警图像包重组与 ACK。配置项、枚举和请求参数见 [告警接入示例](examples/alarms/README.md)。
+各语言均提供消息解析、33 个 RPC 的请求构造与响应关联、重连订阅、告警图像包重组与 ACK。配置项、枚举和请求参数见 [告警接入示例](examples/alarms/README.md)。
 
 <a id="schema"></a>
 

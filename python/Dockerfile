@@ -5,8 +5,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-COPY python/requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt
+COPY python/requirements.lock /app/requirements.lock
+RUN pip install --no-cache-dir -r /app/requirements.lock
 
 COPY proto/inteagle_vdm_mqtt_v1.proto /app/proto/inteagle_vdm_mqtt_v1.proto
 RUN python -m grpc_tools.protoc \
@@ -14,9 +14,12 @@ RUN python -m grpc_tools.protoc \
         --python_out=/app \
         /app/proto/inteagle_vdm_mqtt_v1.proto
 
-COPY python/common.py python/consumer.py python/publisher.py python/alarm_rpc.py python/alarm_notifications.py python/receive_data.py python/evidence_receiver.py /app/
+COPY python/common.py python/consumer.py python/publisher.py python/alarm_rpc.py python/alarm_notifications.py python/receive_data.py python/evidence_receiver.py python/sdk_examples.py /app/
 COPY python/vdm_mqtt_sdk /app/vdm_mqtt_sdk
+COPY python/vdm_service /app/vdm_service
+COPY contracts /contracts
 COPY examples /examples
+COPY tests/fixtures /tests/fixtures
 COPY python/tests /app/tests
 RUN python -m unittest discover -s /app/tests -v
 

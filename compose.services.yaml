@@ -1,0 +1,53 @@
+name: vdm-reference-services
+x-service-env: &service-env
+  VDM_SERVICE_CONFIG: /config/service.json
+  VDM_DATA_DIR: /data
+  VDM_HTTP_HOST: 0.0.0.0
+  VDM_HTTP_PORT: "8080"
+  VDM_API_TOKEN: ${VDM_API_TOKEN:?Set VDM_API_TOKEN for container HTTP access}
+  MQTT_USERNAME: ${MQTT_USERNAME:-}
+  MQTT_PASSWORD: ${MQTT_PASSWORD:-}
+  VDM_WEBHOOK_URL: ${VDM_WEBHOOK_URL:-}
+  VDM_WEBHOOK_TOKEN: ${VDM_WEBHOOK_TOKEN:-}
+services:
+  broker:
+    image: emqx/nanomq:0.25.2-2@sha256:8d391c73eb084a32accbe13516bbea83e33736542da9ea755c3b3b3417378961
+    ports: ["${VDM_BROKER_BIND:-127.0.0.1}:${VDM_BROKER_PORT:-18883}:1883"]
+    restart: unless-stopped
+  python:
+    profiles: [python]
+    build: {context: ., dockerfile: python/Dockerfile.service}
+    environment: *service-env
+    ports: ["127.0.0.1:${VDM_PYTHON_PORT:-8081}:8080"]
+    volumes: ["${VDM_SERVICE_CONFIG:-./contracts/config.compose.json}:/config/service.json:ro", "python-data:/data"]
+    depends_on: [broker]
+    restart: unless-stopped
+  go:
+    profiles: [go]
+    build: {context: ., dockerfile: go/Dockerfile.service}
+    environment: *service-env
+    ports: ["127.0.0.1:${VDM_GO_PORT:-8082}:8080"]
+    volumes: ["${VDM_SERVICE_CONFIG:-./contracts/config.compose.json}:/config/service.json:ro", "go-data:/data"]
+    depends_on: [broker]
+    restart: unless-stopped
+  java:
+    profiles: [java]
+    build: {context: ., dockerfile: java/Dockerfile.service}
+    environment: *service-env
+    ports: ["127.0.0.1:${VDM_JAVA_PORT:-8083}:8080"]
+    volumes: ["${VDM_SERVICE_CONFIG:-./contracts/config.compose.json}:/config/service.json:ro", "java-data:/data"]
+    depends_on: [broker]
+    restart: unless-stopped
+  javascript:
+    profiles: [javascript]
+    build: {context: ., dockerfile: javascript/Dockerfile.service}
+    environment: *service-env
+    ports: ["127.0.0.1:${VDM_JAVASCRIPT_PORT:-8084}:8080"]
+    volumes: ["${VDM_SERVICE_CONFIG:-./contracts/config.compose.json}:/config/service.json:ro", "javascript-data:/data"]
+    depends_on: [broker]
+    restart: unless-stopped
+volumes:
+  python-data:
+  go-data:
+  java-data:
+  javascript-data:

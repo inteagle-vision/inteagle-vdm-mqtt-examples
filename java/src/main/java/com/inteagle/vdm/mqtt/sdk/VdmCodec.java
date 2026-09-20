@@ -24,6 +24,10 @@ public final class VdmCodec {
   public static final int SCHEMA_VERSION = 1;
 
   private static final Map<String, String> PUBLIC_RPC_FIELDS = Map.ofEntries(
+      Map.entry("listAlarmEvents", "list_alarm_events"),
+      Map.entry("syncTelemetry", "sync_telemetry"),
+      Map.entry("getSyncStatus", "get_sync_status"),
+      Map.entry("cancelSync", "cancel_sync"),
       Map.entry("getAttr", "get_attr"),
       Map.entry("setAttr", "set_attr"),
       Map.entry("reboot", "reboot"),
@@ -219,8 +223,8 @@ public final class VdmCodec {
       return node.intValue();
     }
     String value = node.asText();
-    return value.equals("0") || value.equalsIgnoreCase("ok") || value.equalsIgnoreCase("success")
-        ? 0 : 1;
+    if(value.equalsIgnoreCase("ok") || value.equalsIgnoreCase("success")) return 0;
+    try { return Integer.parseInt(value); } catch(NumberFormatException invalid) { return 1; }
   }
 
   private static Message parseProtobuf(String suffix, byte[] payload) throws Exception {

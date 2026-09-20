@@ -1,0 +1,282 @@
+{
+  "schemaVersion": 1,
+  "contractVersion": "vdm-mqtt-v1",
+  "payloadFormats": [
+    "json",
+    "protobuf"
+  ],
+  "models": [
+    {
+      "id": "v1",
+      "motor": false
+    },
+    {
+      "id": "v1-pro",
+      "motor": false
+    },
+    {
+      "id": "v1-lite",
+      "motor": false
+    },
+    {
+      "id": "v2-h",
+      "motor": false
+    },
+    {
+      "id": "v2-w",
+      "motor": false
+    },
+    {
+      "id": "v2-k",
+      "motor": false
+    },
+    {
+      "id": "o1",
+      "motor": true
+    },
+    {
+      "id": "o2-h",
+      "motor": true
+    },
+    {
+      "id": "x1",
+      "motor": true
+    },
+    {
+      "id": "x2-h",
+      "motor": true
+    }
+  ],
+  "available": [
+    {
+      "method": "getAttr",
+      "protobufField": "get_attr",
+      "class": "read"
+    },
+    {
+      "method": "setAttr",
+      "protobufField": "set_attr",
+      "class": "mutation"
+    },
+    {
+      "method": "reboot",
+      "protobufField": "reboot",
+      "class": "dangerous"
+    },
+    {
+      "method": "syncTime",
+      "protobufField": "sync_time",
+      "class": "mutation"
+    },
+    {
+      "method": "initRefTargets",
+      "protobufField": "init_ref_targets",
+      "class": "mutation"
+    },
+    {
+      "method": "addTargets",
+      "protobufField": "add_targets",
+      "class": "mutation"
+    },
+    {
+      "method": "getTargets",
+      "protobufField": "get_targets",
+      "class": "read"
+    },
+    {
+      "method": "setTargets",
+      "protobufField": "set_targets",
+      "class": "mutation"
+    },
+    {
+      "method": "deleteTargets",
+      "protobufField": "delete_targets",
+      "class": "mutation"
+    },
+    {
+      "method": "startMeasurement",
+      "protobufField": "start_measurement",
+      "class": "mutation"
+    },
+    {
+      "method": "stopMeasurement",
+      "protobufField": "stop_measurement",
+      "class": "mutation"
+    },
+    {
+      "method": "setLightLevel",
+      "protobufField": "set_light_level",
+      "class": "mutation"
+    },
+    {
+      "method": "getLightLevel",
+      "protobufField": "get_light_level",
+      "class": "read"
+    },
+    {
+      "method": "snapshot",
+      "protobufField": "snapshot",
+      "class": "snapshot"
+    },
+    {
+      "method": "ispCtl",
+      "protobufField": "isp_ctl",
+      "class": "mutation"
+    },
+    {
+      "method": "setMotorAngle",
+      "protobufField": "set_motor_angle",
+      "class": "mutation",
+      "requires": "motor"
+    },
+    {
+      "method": "getMotorAngle",
+      "protobufField": "get_motor_angle",
+      "class": "read",
+      "requires": "motor"
+    },
+    {
+      "method": "setMotorZero",
+      "protobufField": "set_motor_zero",
+      "class": "dangerous",
+      "requires": "motor"
+    },
+    {
+      "method": "enableMotor",
+      "protobufField": "enable_motor",
+      "class": "mutation",
+      "requires": "motor"
+    },
+    {
+      "method": "disableMotor",
+      "protobufField": "disable_motor",
+      "class": "mutation",
+      "requires": "motor"
+    },
+    {
+      "method": "getCruisePaths",
+      "protobufField": "get_cruise_paths",
+      "class": "read",
+      "requires": "motor"
+    },
+    {
+      "method": "getEvidenceStatus",
+      "protobufField": "get_evidence_status",
+      "class": "read"
+    },
+    {
+      "method": "retryEvidence",
+      "protobufField": "retry_evidence",
+      "class": "mutation"
+    },
+    {
+      "method": "ackEvidencePackage",
+      "protobufField": "ack_evidence_package",
+      "class": "mutation"
+    },
+    {
+      "method": "getAlarmCaps",
+      "protobufField": "get_alarm_caps",
+      "class": "read"
+    },
+    {
+      "method": "listAlarmRules",
+      "protobufField": "list_alarm_rules",
+      "class": "read"
+    },
+    {
+      "method": "applyAlarmRules",
+      "protobufField": "apply_alarm_rules",
+      "class": "mutation"
+    },
+    {
+      "method": "getAlarmState",
+      "protobufField": "get_alarm_state",
+      "class": "read"
+    },
+    {
+      "method": "listAlarmHistory",
+      "protobufField": "list_alarm_history",
+      "class": "read"
+    },
+    {
+      "method": "listAlarmEvents",
+      "protobufField": "list_alarm_events",
+      "class": "read"
+    },
+    {
+      "method": "syncTelemetry",
+      "protobufField": "sync_telemetry",
+      "class": "mutation"
+    },
+    {
+      "method": "getSyncStatus",
+      "protobufField": "get_sync_status",
+      "class": "read"
+    },
+    {
+      "method": "cancelSync",
+      "protobufField": "cancel_sync",
+      "class": "mutation"
+    }
+  ],
+  "unavailable": [
+    {
+      "method": "getStorageInfo",
+      "protobufField": "get_storage_info",
+      "expected": "firmware_unavailable"
+    },
+    {
+      "method": "queryTelemetry",
+      "protobufField": "query_telemetry",
+      "expected": "firmware_unavailable"
+    },
+    {
+      "method": "uploadS3",
+      "protobufField": "upload_s3",
+      "expected": "firmware_unavailable"
+    },
+    {
+      "method": "setCruisePoint",
+      "protobufField": "set_cruise_point",
+      "expected": "firmware_unavailable"
+    },
+    {
+      "method": "removeCruisePoint",
+      "protobufField": "remove_cruise_point",
+      "expected": "firmware_unavailable"
+    },
+    {
+      "method": "startPatrol",
+      "protobufField": "start_patrol",
+      "expected": "firmware_unavailable"
+    },
+    {
+      "method": "stopPatrol",
+      "protobufField": "stop_patrol",
+      "expected": "firmware_unavailable"
+    },
+    {
+      "method": "getPatrolStatus",
+      "protobufField": "get_patrol_status",
+      "expected": "firmware_unavailable"
+    }
+  ],
+  "reportMetrics": {
+    "supported": [
+      "dx",
+      "dy"
+    ],
+    "default": [
+      "dx",
+      "dy"
+    ]
+  },
+  "forbiddenTelemetryFields": [
+    "dx_bar",
+    "dy_bar",
+    "rp_dx",
+    "rp_dy",
+    "compensated"
+  ]
+}

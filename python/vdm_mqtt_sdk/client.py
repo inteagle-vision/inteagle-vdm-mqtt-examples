@@ -49,6 +49,8 @@ class VdmMqttClientConfig:
         default_factory=lambda: f"vdm-sdk-python-{uuid.uuid4().hex[:12]}"
     )
     subscription_suffixes: tuple[str, ...] | None = None
+    persistent_session: bool = False
+    manual_ack: bool = False
 
     def __post_init__(self) -> None:
         if not self.host.strip():
@@ -86,11 +88,13 @@ class VdmMqttClient:
         config: VdmMqttClientConfig,
         on_message: MessageHandler | None = None,
         on_error: ErrorHandler | None = None,
+        on_raw_message: Callable[[str, bytes], None] | None = None,
     ) -> None:
         self.config = config
         self.codec = VdmCodec(config.payload_format)
         self.on_message = on_message
         self.on_error = on_error
+        self.on_raw_message = on_raw_message
         self._connected = threading.Event()
         self._subscribed = threading.Event()
         self._subscription_error: Exception | None = None
@@ -102,6 +106,8 @@ class VdmMqttClient:
             callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
             client_id=config.client_id,
             protocol=mqtt.MQTTv311,
+            clean_session=not config.persistent_session,
+            manual_ack=config.manual_ack,
         )
         if config.username is not None:
             self._client.username_pw_set(config.username, config.password)
@@ -113,6 +119,19 @@ class VdmMqttClient:
     @property
     def is_connected(self) -> bool:
         return self._connected.is_set()
+
+    def start_background(self) -> None:
+        """Start Paho's reconnecting loop without blocking HTTP startup."""
+        self._stopped.clear()
+        self._client.reconnect_delay_set(min_delay=1, max_delay=30)
+        self._client.connect_async(self.config.host, self.config.port, self.config.keepalive)
+        self._client.loop_start()
+
+    def reconnect_background(self) -> None:
+        """Restart after explicit disconnect; invoke outside the MQTT callback."""
+        self._client.loop_stop()
+        if not self._stopped.is_set():
+            self.start_background()
 
     def start(self) -> None:
         deadline = time.monotonic() + self.config.connect_timeout
@@ -163,11 +182,11 @@ class VdmMqttClient:
     def __exit__(self, _type: object, _value: object, _traceback: object) -> None:
         self.stop()
 
-    def publish_raw(self, topic: str, payload: bytes | str, *, retain: bool = False) -> None:
+    def publish_raw(self, topic: str, payload: bytes | str, *, retain: bool = False, timeout: float = 5.0) -> None:
         info = self._client.publish(topic, payload=payload, qos=self.config.qos, retain=retain)
         if info.rc != mqtt.MQTT_ERR_SUCCESS:
             raise RuntimeError(f"MQTT publish 失败 rc={info.rc}")
-        info.wait_for_publish(timeout=5)
+        info.wait_for_publish(timeout=timeout)
         if not info.is_published():
             raise TimeoutError(f"MQTT publish ACK 超时: {topic}")
 
@@ -180,6 +199,9 @@ class VdmMqttClient:
         req_id: int | None = None,
         allow_error: bool = False,
     ) -> DecodedPayload:
+        if timeout <= 0:
+            raise ValueError("RPC timeout must be positive")
+        deadline = time.monotonic() + timeout
         if req_id is None:
             req_id = (next(self._req_ids) - 1) % ((1 << 31) - 1) + 1
         payload, expected_field = self.codec.encode_rpc_request(method, params, req_id)
@@ -189,8 +211,8 @@ class VdmMqttClient:
                 raise ValueError(f"req_id 已在当前连接等待响应: {req_id}")
             self._pending[req_id] = pending
         try:
-            self.publish_raw(self.config.topics.rpc_request, payload)
-            if not pending.event.wait(timeout):
+            self.publish_raw(self.config.topics.rpc_request, payload, timeout=max(0, deadline-time.monotonic()))
+            if not pending.event.wait(max(0, deadline-time.monotonic())):
                 raise TimeoutError(f"等待 RPC 响应超时: method={method}, req_id={req_id}")
             if pending.error is not None:
                 raise pending.error
@@ -327,6 +349,14 @@ class VdmMqttClient:
 
     def _on_message(self, _client: mqtt.Client, _userdata: Any, msg: mqtt.MQTTMessage) -> None:
         try:
+            suffix = self.config.topics.suffix(msg.topic)
+            if suffix != "rpc/resp" and self.on_raw_message is not None:
+                # Callback must COMMIT the raw inbox before returning. Do not decode,
+                # perform application work or wait for RPC from the network loop.
+                self.on_raw_message(msg.topic, bytes(msg.payload))
+                if self.config.manual_ack and msg.qos:
+                    _client.ack(msg.mid, msg.qos)
+                return
             decoded = self.codec.decode(
                 msg.topic,
                 self.config.topics,
@@ -342,7 +372,13 @@ class VdmMqttClient:
                         pending.event.set()
             if self.on_message is not None:
                 self.on_message(decoded)
+            if self.config.manual_ack and msg.qos:
+                _client.ack(msg.mid, msg.qos)
         except Exception as exc:
+            if self.config.manual_ack and msg.qos:
+                # No PUBACK on failure. Service supervisor reconnects this stable
+                # persistent session to let the broker redeliver the message.
+                _client.disconnect()
             self._report_error(exc)
 
     def _report_error(self, error: Exception) -> None:

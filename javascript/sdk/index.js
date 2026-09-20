@@ -107,6 +107,10 @@ const PUBLIC_RPC_FIELDS = Object.freeze({
   applyAlarmRules: "applyAlarmRules",
   getAlarmState: "getAlarmState",
   listAlarmHistory: "listAlarmHistory",
+  listAlarmEvents: "listAlarmEvents",
+  syncTelemetry: "syncTelemetry",
+  getSyncStatus: "getSyncStatus",
+  cancelSync: "cancelSync",
 });
 
 const RPC_CODE_MESSAGES = Object.freeze({
@@ -454,14 +458,26 @@ class VdmMqttClient {
     }
     const options = {
       clientId: this.config.clientId,
-      clean: true,
+      clean: !this.config.durableReceive,
       reconnectPeriod: 1_000,
       connectTimeout: Math.min(this.config.connectTimeoutMs, 10_000),
       username: this.config.username,
       password: this.config.password,
     };
     this.client = mqtt.connect(`mqtt://${this.config.host}:${this.config.port}`, options);
-    this.client.on("message", (topic, payload) => this.handleMessage(topic, payload));
+    this.client.on("message", (topic, payload) => {
+      if (!this.config.durableReceive || topic === this.config.topics.rpcResponse) this.handleMessage(topic, payload);
+    });
+    if (this.config.durableReceive) this.client.handleMessage = (packet, done) => {
+      try {
+        if (packet.topic !== this.config.topics.rpcResponse) this.config.durableReceive(packet.topic, packet.payload, packet.qos);
+        done(); // mqtt.js emits PUBACK only after this successful callback.
+      } catch (error) {
+        this.report(error);
+        this.client?.stream?.destroy(); // persistent session redelivers unacknowledged QoS1
+        done(error);
+      }
+    };
     this.client.on("error", (error) => {
       if (this.started) this.report(error);
     });
@@ -552,17 +568,23 @@ class VdmMqttClient {
       reject: rejectPending,
       timer: null,
     };
+    let rejectDeadline;
+    const deadline = new Promise((_, reject) => { rejectDeadline = reject; });
     pending.timer = setTimeout(() => {
       if (this.pending.get(reqId) === pending) {
         this.pending.delete(reqId);
-        pending.reject(new Error(`等待 RPC 响应超时: method=${method}, reqId=${reqId}`));
+        const error = new Error(`等待 RPC 响应超时: method=${method}, reqId=${reqId}`);
+        pending.reject(error);
+        rejectDeadline(error);
       }
     }, timeoutMs);
     this.pending.set(reqId, pending);
 
     try {
-      await this.publishRaw(this.config.topics.rpcRequest, encoded.payload);
-      const response = await result;
+      const [response] = await Promise.race([
+        Promise.all([result, this.publishRaw(this.config.topics.rpcRequest, encoded.payload)]),
+        deadline,
+      ]);
       const info = this.codec.responseInfo(response.value);
       if (info.reqId !== reqId) {
         throw new Error(`RPC reqId 不匹配: request=${reqId} response=${info.reqId}`);

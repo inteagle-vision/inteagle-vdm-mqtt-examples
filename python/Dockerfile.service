@@ -1,0 +1,17 @@
+FROM python:3.12-slim@sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 VDM_DATA_DIR=/data
+WORKDIR /app/python
+COPY python/requirements.lock ./requirements.lock
+RUN pip install --no-cache-dir -r requirements.lock
+COPY python /app/python
+COPY contracts /app/contracts
+COPY examples /app/examples
+COPY tests/fixtures /app/tests/fixtures
+COPY proto /app/proto
+RUN python -m grpc_tools.protoc -I/app/proto --python_out=/app/python /app/proto/inteagle_vdm_mqtt_v1.proto \
+    && python -m unittest discover -s tests \
+    && useradd --uid 10001 --create-home vdm \
+    && mkdir /data && chown vdm:vdm /data
+USER vdm
+EXPOSE 8080
+CMD ["python", "-m", "vdm_service"]

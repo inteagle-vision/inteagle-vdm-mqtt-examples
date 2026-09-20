@@ -107,7 +107,7 @@ class VdmCodecTests(unittest.TestCase):
 
     def test_all_public_rpc_methods_build_a_typed_body(self) -> None:
         codec = VdmCodec("protobuf")
-        self.assertEqual(len(RPC_REQUEST_TYPES), 29)
+        self.assertEqual(len(RPC_REQUEST_TYPES), 33)
         for req_id, (method, (expected, _message_type)) in enumerate(
             RPC_REQUEST_TYPES.items(), start=100
         ):

@@ -81,9 +81,9 @@ test("Topic 映射并拒绝通配符", () => {
   assert.throws(() => VdmTopics.forDevice("bad/#"));
 });
 
-test("29 个公开 RPC 都构造强类型 oneof", () => {
+test("33 个公开 RPC 都构造强类型 oneof", () => {
   const codec = new VdmCodec("protobuf");
-  assert.equal(Object.keys(PUBLIC_RPC_FIELDS).length, 29);
+  assert.equal(Object.keys(PUBLIC_RPC_FIELDS).length, 33);
   let reqId = 100;
   for (const [method, field] of Object.entries(PUBLIC_RPC_FIELDS)) {
     const encoded = codec.encodeRpcRequest(method, {}, reqId++);

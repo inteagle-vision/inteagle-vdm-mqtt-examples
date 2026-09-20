@@ -279,6 +279,8 @@ var publicRPCFields = map[string]string{
 	"getAlarmCaps":       "get_alarm_caps", "listAlarmRules": "list_alarm_rules",
 	"applyAlarmRules": "apply_alarm_rules", "getAlarmState": "get_alarm_state",
 	"listAlarmHistory": "list_alarm_history",
+	"listAlarmEvents":  "list_alarm_events", "syncTelemetry": "sync_telemetry",
+	"getSyncStatus": "get_sync_status", "cancelSync": "cancel_sync",
 }
 
 func (c Codec) EncodeRPC(method string, params any, reqID int32) ([]byte, string, error) {
@@ -316,6 +318,10 @@ func (c Codec) EncodeRPC(method string, params any, reqID int32) ([]byte, string
 }
 
 type Config struct {
+	// DurableHandler stores raw business payloads before QoS1 PUBACK. Never call RPC here.
+	DurableHandler func(topic string, payload []byte) error
+	// PersistentSession requires a stable, exclusive ClientID.
+	PersistentSession bool
 	// Nil/empty preserves wildcard subscription; entries are public topic suffixes.
 	SubscriptionSuffixes []string
 	Host                 string
@@ -353,6 +359,7 @@ type Client struct {
 	pending    map[int32]*pendingRPC
 	mu         sync.Mutex
 	nextReqID  atomic.Int32
+	subscribed atomic.Bool
 }
 
 func subscriptionTopics(config Config) (map[string]byte, error) {
@@ -430,7 +437,9 @@ func NewClient(config Config, handler MessageHandler, onError ErrorHandler) (*Cl
 	options := mqtt.NewClientOptions().
 		AddBroker(fmt.Sprintf("tcp://%s:%d", config.Host, config.Port)).
 		SetClientID(config.ClientID).
-		SetCleanSession(true).
+		SetCleanSession(!config.PersistentSession).
+		SetAutoAckDisabled(config.DurableHandler != nil).
+		SetDefaultPublishHandler(result.onMessage).
 		SetAutoReconnect(true).
 		SetConnectTimeout(2 * time.Second).
 		SetOnConnectHandler(func(client mqtt.Client) {
@@ -452,9 +461,11 @@ func NewClient(config Config, handler MessageHandler, onError ErrorHandler) (*Cl
 				result.failReady(err)
 				return
 			}
+			result.subscribed.Store(true)
 			result.readyOnce.Do(func() { close(result.ready) })
 		}).
 		SetConnectionLostHandler(func(_ mqtt.Client, err error) {
+			result.subscribed.Store(false)
 			result.failPending(&TransportError{Err: fmt.Errorf("MQTT 连接断开: %w", err)})
 			result.report(err)
 		})
@@ -494,7 +505,12 @@ func (c *Client) Start(ctx context.Context) error {
 	}
 }
 
+func (c *Client) Connected() bool {
+	return c.client != nil && c.client.IsConnectionOpen() && c.subscribed.Load()
+}
+
 func (c *Client) Close() {
+	c.subscribed.Store(false)
 	c.failPending(errors.New("VDM MQTT client stopped"))
 	c.client.Disconnect(1000)
 }
@@ -572,8 +588,17 @@ func (c *Client) Call(ctx context.Context, method string, params any, reqID int3
 		}
 		c.mu.Unlock()
 	}()
-	if err := c.PublishRaw(c.config.Topics.RPCRequest(), payload, false); err != nil {
+	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	token := c.client.Publish(c.config.Topics.RPCRequest(), c.config.QoS, false, payload)
+	select {
+	case <-token.Done():
+		if err := token.Error(); err != nil {
+			return nil, &TransportError{Err: err}
+		}
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 	select {
 	case result := <-pending.result:
@@ -674,7 +699,23 @@ func responseInfo(value any) (int32, int32, string, string, error) {
 	}
 }
 
-func (c *Client) onMessage(_ mqtt.Client, message mqtt.Message) {
+func (c *Client) onMessage(client mqtt.Client, message mqtt.Message) {
+	if c.config.DurableHandler != nil && message.Topic() != c.config.Topics.RPCResponse() {
+		if err := c.config.DurableHandler(message.Topic(), message.Payload()); err != nil {
+			c.report(err)
+			c.subscribed.Store(false)
+			// Disconnect outside Paho's ordered callback; supervisor reconnects for redelivery.
+			if client != nil {
+				go client.Disconnect(0)
+			}
+			return
+		}
+		message.Ack()
+		return
+	}
+	if c.config.DurableHandler != nil {
+		defer message.Ack()
+	}
 	decoded, err := c.codec.Decode(message.Topic(), c.config.Topics, message.Payload())
 	if err != nil {
 		c.report(err)

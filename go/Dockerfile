@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1.7
 
 FROM golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac AS builder
 
@@ -22,6 +21,8 @@ RUN mkdir -p /src/go/generated \
 
 COPY go/cmd /src/go/cmd
 COPY examples /src/examples
+COPY tests/fixtures /src/tests/fixtures
+COPY contracts /src/contracts
 COPY go/sdk /src/go/sdk
 COPY go/internal /src/go/internal
 RUN go test ./... \

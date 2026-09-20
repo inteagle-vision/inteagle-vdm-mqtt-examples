@@ -26,3 +26,10 @@ go/generated/
 
 # Captures received from real devices
 /evidence/
+
+# Reference service runtime data (never commit credentials or device traffic)
+/python/data/
+/go/data/
+/java/data/
+/javascript/data/
+/services-data/

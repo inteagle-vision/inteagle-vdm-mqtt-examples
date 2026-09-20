@@ -182,6 +182,10 @@ PROTOBUF_MESSAGE_TYPES: dict[str, type[Message]] = {
 # 客户方法名、RpcRequest oneof 字段、请求消息类型。通过这个显式矩阵，SDK 不会
 # 把设备内部命令名称当成可调用的客户 RPC。
 RPC_REQUEST_TYPES: dict[str, tuple[str, type[Message]]] = {
+    "listAlarmEvents": ("list_alarm_events", pb.ListAlarmEventsRequest),
+    "syncTelemetry": ("sync_telemetry", pb.SyncTelemetryRequest),
+    "getSyncStatus": ("get_sync_status", pb.TelemetrySyncJobRequest),
+    "cancelSync": ("cancel_sync", pb.TelemetrySyncJobRequest),
     "getAttr": ("get_attr", pb.GetAttributesRequest),
     "setAttr": ("set_attr", pb.SetAttributesRequest),
     "reboot": ("reboot", pb.Empty),

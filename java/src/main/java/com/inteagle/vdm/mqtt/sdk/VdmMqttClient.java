@@ -75,6 +75,9 @@ public final class VdmMqttClient implements AutoCloseable, MqttCallbackExtended 
     }
   }
 
+  @FunctionalInterface public interface DurableInbox { void accept(String topic, byte[] payload) throws Exception; }
+  private final DurableInbox durableInbox;
+
   private record Pending(String expectedField, CompletableFuture<DecodedPayload> future) {}
 
   private final Config config;
@@ -96,15 +99,25 @@ public final class VdmMqttClient implements AutoCloseable, MqttCallbackExtended 
       Config config,
       Consumer<DecodedPayload> handler,
       Consumer<Throwable> errorHandler) throws MqttException {
+    this(config, handler, errorHandler, null, null);
+  }
+
+  /** Service mode: persistent session and raw durable storage before manual PUBACK. */
+  public VdmMqttClient(Config config, Consumer<DecodedPayload> handler,
+      Consumer<Throwable> errorHandler, DurableInbox durableInbox, java.nio.file.Path persistence) throws MqttException {
+    this.durableInbox = durableInbox;
     this.config = config;
     this.codec = new VdmCodec(config.payloadFormat());
     this.handler = handler;
     this.errorHandler = errorHandler;
     this.client = new MqttAsyncClient(
-        "tcp://" + config.host() + ":" + config.port(), config.clientId());
+        "tcp://" + config.host() + ":" + config.port(), config.clientId(),
+        persistence == null ? new org.eclipse.paho.client.mqttv3.persist.MemoryPersistence()
+          : new org.eclipse.paho.client.mqttv3.persist.MqttDefaultFilePersistence(persistence.toString()));
+    this.client.setManualAcks(durableInbox != null);
     this.client.setCallback(this);
     this.connectOptions = new MqttConnectOptions();
-    connectOptions.setCleanSession(true);
+    connectOptions.setCleanSession(durableInbox == null);
     connectOptions.setAutomaticReconnect(true);
     connectOptions.setConnectionTimeout(2);
     if (config.username() != null && !config.username().isBlank()) {
@@ -112,6 +125,8 @@ public final class VdmMqttClient implements AutoCloseable, MqttCallbackExtended 
       connectOptions.setPassword(config.password() == null ? new char[0] : config.password().toCharArray());
     }
   }
+
+  public boolean isConnected() { return client.isConnected() && subscribed.getCount()==0 && subscriptionError==null; }
 
   public VdmCodec codec() {
     return codec;
@@ -170,8 +185,18 @@ public final class VdmMqttClient implements AutoCloseable, MqttCallbackExtended 
       throw new IllegalArgumentException("reqId 已在当前连接等待响应: " + id);
     }
     try {
-      publishRaw(config.topics().rpcRequest(), encoding.payload(), false);
-      DecodedPayload result = call.future().get(timeout.toMillis(), TimeUnit.MILLISECONDS);
+      long deadline = System.nanoTime() + timeout.toNanos();
+      MqttMessage outgoing = new MqttMessage(encoding.payload());
+      outgoing.setQos(config.qos());
+      try {
+        client.publish(config.topics().rpcRequest(), outgoing).waitForCompletion(Math.max(1, timeout.toMillis()));
+      } catch (MqttException error) {
+        if(error.getReasonCode() == MqttException.REASON_CODE_CLIENT_TIMEOUT) throw new TimeoutException("RPC publish timed out; device outcome unknown");
+        throw error;
+      }
+      long remaining = deadline - System.nanoTime();
+      if(remaining <= 0) throw new TimeoutException("RPC timed out; device outcome unknown");
+      DecodedPayload result = call.future().get(remaining, TimeUnit.NANOSECONDS);
       VdmCodec.ResponseInfo response = codec.responseInfo(result.value());
       if (response.reqId() != id) {
         throw new IllegalStateException(
@@ -297,8 +322,13 @@ public final class VdmMqttClient implements AutoCloseable, MqttCallbackExtended 
   }
 
   @Override
-  public void messageArrived(String topic, MqttMessage message) {
+  public void messageArrived(String topic, MqttMessage message) throws Exception {
     try {
+      if (durableInbox != null && !config.topics().suffix(topic).equals("rpc/resp")) {
+        durableInbox.accept(topic, message.getPayload());
+        if(message.getQos() > 0) client.messageArrivedComplete(message.getId(), message.getQos());
+        return;
+      }
       DecodedPayload decoded = codec.decode(topic, config.topics(), message.getPayload());
       if (decoded.suffix().equals("rpc/resp")) {
         VdmCodec.ResponseInfo info = codec.responseInfo(decoded.value());
@@ -310,8 +340,10 @@ public final class VdmMqttClient implements AutoCloseable, MqttCallbackExtended 
       if (handler != null) {
         handler.accept(decoded);
       }
+      if(durableInbox != null && message.getQos() > 0) client.messageArrivedComplete(message.getId(), message.getQos());
     } catch (Throwable exception) {
       report(exception);
+      if(durableInbox != null) throw new Exception("durable delivery failed; reconnect for redelivery", exception);
     }
   }
 

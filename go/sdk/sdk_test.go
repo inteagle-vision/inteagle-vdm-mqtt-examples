@@ -57,8 +57,8 @@ func TestRPCErrorTextIsDerivedLocallyFromNumericCode(t *testing.T) {
 }
 
 func TestAllPublicRPCMethodsBuildTypedBody(t *testing.T) {
-	if len(publicRPCFields) != 29 {
-		t.Fatalf("expected 29 public methods, got %d", len(publicRPCFields))
+	if len(publicRPCFields) != 33 {
+		t.Fatalf("expected 33 public methods, got %d", len(publicRPCFields))
 	}
 	codec := Codec{Format: Protobuf}
 	reqID := int32(100)
