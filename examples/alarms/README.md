@@ -1,4 +1,48 @@
-# 告警配置与订阅
+# 告警接入：设备推送与平台通知
+
+设备负责判定告警并推送消息，客户平台负责保存告警、去重，以及发送短信、电话或 App 推送。**仅接入告警通知时，订阅 `vdm/{deviceId}/3A` 即可；不要每收到一条 MQTT 消息就通知一次。**
+
+## 先了解如何运行
+
+1. 平台通过 RPC 配置并启用设备告警规则；配置成功后回读核对。
+2. 设备自行判定阈值和持续时间，有状态变化时主动发布 `/3A`，不需要平台轮询触发。
+3. 平台持久化去重、更新告警状态，再根据 `transition` 决定是否创建通知任务。
+4. 后台任务调用客户通知服务；最终发送端也须做幂等处理，避免重试产生重复通知。
+
+### 三个主题，不是三次告警
+
+| 默认主题 | 内容 | 平台用途 |
+| --- | --- | --- |
+| `vdm/{deviceId}/3A` | 告警触发、等级变化、恢复和同步 | **告警通知的入口** |
+| `vdm/{deviceId}/event` | 其中 `type=ALARM_EVIDENCE` 表示证据状态，如 `READY`、`AVAILABLE` | 更新证据展示，不再次触发告警通知 |
+| `vdm/{deviceId}/image` | 图片；告警证据为类型 2 的二进制包分块 | 接收、保存并确认图片，见[抓拍上传](#告警抓拍上传) |
+
+`/event` 也可能承载其他设备事件，应先判断 `type`，不能全部当成告警。只做短信、电话或 App 告警通知时，无需订阅后两个主题；需要图片展示时再接入。
+
+### 怎样判断是不是重复
+
+| 字段 | 含义 | 使用方式 |
+| --- | --- | --- |
+| `alarmId` | 一轮告警的身份，从触发到恢复或取消 | 用 `deviceId + alarmId` 关联生命周期，不能据此丢弃所有后续状态 |
+| `/3A.eventId` | 一次状态变化的身份 | 用 `deviceId + eventId` 持久化去重；同一消息重发时 ID 不变 |
+| `/event.detail.eventId` | 证据所对应的告警事件 | 与 `/3A.eventId` 关联；`READY → AVAILABLE` 沿用该 ID，不是新的告警 |
+| `ts` | 此次事件的生成时间，Unix 秒 | 不等于平台接收时间；排队、断线补发时可以明显早于接收时间 |
+
+例如：同一个 `alarmId=A` 可以依次收到 `TRIGGERED(eventId=1)`、`SYNCED(eventId=2)`、`RECOVERED(eventId=3)`，它们不是重复事件。再次收到 `eventId=1` 才是该事件的重复投递。
+
+### 为什么会收到 SYNCED
+
+重启或 MQTT 重连后，设备用 `SYNCED` 同步仍然活动的告警：沿用 `alarmId`，生成新的 `/3A.eventId`。没有活动告警时不会因此发出 `SYNCED`。它不是新触发，也不是定时告警心跳，**平台只更新状态，不发外部通知**。
+
+平台清除页面记录不会解除设备告警；应保留生命周期和去重记录，避免后续同步被误判为新告警。
+
+### Java 示例覆盖范围
+
+`AlarmNotificationConsumer` **只订阅 `/3A`**，由 `AlarmNotificationStore` 保存事件、告警状态和通知任务，`NotificationOutboxWorker` 再调用客户 Webhook。它不处理 `/event` 证据状态，也不直接对接短信或电话供应商。
+
+证据业务应单独实现幂等更新，不能套用仅含 `eventId` 的告警去重键，否则会吞掉合法的证据状态变化。相同类型、关联事件、证据类型、状态及内容的重复通知只更新一次，不新建告警通知任务。
+
+接入顺序：[通知策略与去重](#告警通知与防重复) → [运行示例](#运行) → [配置规则](#配置步骤)。完整请求和消息见下表。
 
 各语言客户端使用同一组 [请求示例](requests.json) 和 [告警消息](events.json)，支持 Protobuf（推荐）与 JSON。默认只查询能力；加 `--print-only` 可查看请求并验证编码，不连接设备。
 
@@ -68,28 +112,7 @@ mvn -q package
 java -cp target/vdm-mqtt-consumer-1.0.0.jar com.inteagle.examples.vdm.AlarmRpc --case capabilities
 ```
 
-生产侧接收告警时使用独立的
-[AlarmNotificationConsumer](../../java/src/main/java/com/inteagle/examples/vdm/AlarmNotificationConsumer.java)，
-不要在 `AlarmRpc` 的打印回调里直接发短信或电话：
-
-```bash
-java -cp target/vdm-mqtt-consumer-1.0.0.jar \
-  com.inteagle.examples.vdm.AlarmNotificationConsumer \
-  --database ./alarm-notifications.sqlite3
-```
-
-该入口把事件去重、告警生命周期和待发送通知写入同一个 SQLite 事务。再启动
-[NotificationOutboxWorker](../../java/src/main/java/com/inteagle/examples/vdm/NotificationOutboxWorker.java)
-把 `PENDING` 记录交给客户的 HTTP 通知服务：
-
-```bash
-export NOTIFICATION_WEBHOOK_URL=https://customer.example.com/api/v1/vdm-alarm-notifications
-java -cp target/vdm-mqtt-consumer-1.0.0.jar \
-  com.inteagle.examples.vdm.NotificationOutboxWorker \
-  --database ./alarm-notifications.sqlite3
-```
-
-Worker 成功收到任意 `2xx` 响应后才标记 `SENT`；网络错误和非 `2xx` 会保留记录并在 30 秒后重试。调试单条待发送记录可加 `--once`。
+以上是配置/调试入口，不要在 `AlarmRpc` 的打印回调里直接发短信或电话。正式通知使用下方的独立消费者和发送任务。
 
 ## 配置步骤
 
@@ -182,7 +205,18 @@ Idempotency-Key: DEVICE001:9007199254740993:ALARM_TRIGGERED
 {"deviceId":"DEVICE001","eventId":"9007199254740993","alarmId":"9007199254740900","notification":"ALARM_TRIGGERED"}
 ```
 
-客户 Webhook 必须先按 `Idempotency-Key` 持久化去重，再返回 `2xx` 并触发短信、电话或 App 推送。原因是外部调用成功、但 Worker 尚未来得及写入 `SENT` 时发生进程崩溃，Worker 会重试该请求；幂等键使这次重试不会产生第二条外部通知。不要在接收到 Webhook 后再异步落库并立刻返回 `2xx`。
+在另一个终端设置相同运行环境，进入 `java/`，启动发送任务：
+
+```bash
+export NOTIFICATION_WEBHOOK_URL=https://customer.example.com/api/v1/vdm-alarm-notifications
+java -cp target/vdm-mqtt-consumer-1.0.0.jar \
+  com.inteagle.examples.vdm.NotificationOutboxWorker \
+  --database ./alarm-notifications.sqlite3
+```
+
+Worker 收到 `2xx` 后标记 `SENT`；网络错误和非 `2xx` 保留任务，30 秒后重试。`NOTIFY` 只代表通知任务已落库，不代表短信或电话已送达。
+
+客户 Webhook 必须先按 `Idempotency-Key` 持久化去重并可靠保存通知任务，再返回 `2xx`；不能先返回成功再异步落库。幂等保障还须延续到实际短信、电话或 App 发送端，防止“发送成功、尚未记录结果就崩溃”后的重试再次通知。
 
 通知 Worker 与 MQTT Consumer 可部署为两个进程，使用同一个 SQLite 文件；量产平台建议把这三张表迁移到 MySQL/PostgreSQL，并沿用唯一键和 lease 语义。
 
@@ -206,8 +240,6 @@ python alarm_notifications.py
 ```bash
 python alarm_notifications.py --database ./alarm-notifications.sqlite3
 ```
-
-平台页面上的“删除/清除记录”不会改变设备端状态；如果设备仍判断告警活动，下一次连接恢复会通过 `SYNCED` 再次同步。页面操作应更新展示或确认状态，不能删除 `(deviceId, alarmId)` 生命周期后把后续同步误判为新告警。
 
 按上述策略处理时，断线可能增加原始 MQTT 消息数量，但不会重复创建短信、电话或推送任务：同一 `eventId` 只处理一次，`SYNCED` 永不通知，同一终态也只会生成一个通知 outbox 记录。最终发送端也应使用上述幂等键；如果第三方通知接口不支持幂等，发送成功后、更新 outbox 前进程崩溃仍可能造成极少量重复，不能宣称严格的“绝对一次”。
 
