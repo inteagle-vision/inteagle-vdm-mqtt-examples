@@ -9,6 +9,62 @@
 3. 平台持久化去重、更新告警状态，再根据 `transition` 决定是否创建通知任务。
 4. 后台任务调用客户通知服务；最终发送端也须做幂等处理，避免重试产生重复通知。
 
+### 运行时序
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant D as VDM设备
+    participant B as MQTT Broker
+    participant P as 客户平台
+    participant DB as 平台数据库
+    participant W as 通知后台任务
+    participant N as 客户通知服务
+
+    Note over D,P: 已配置并启用规则，平台已订阅相关主题
+    D->>D: 测量满足阈值及持续时间
+    D->>B: /3A TRIGGERED（alarmId=A，eventId=E1）
+    B-->>D: PUBACK（仅表示 Broker 确认）
+    B->>P: 投递告警
+    P->>DB: 事务内按 deviceId + eventId 去重
+    alt 首次处理且符合通知策略
+        P->>DB: 同一事务更新告警、写入通知任务
+        DB-->>P: 提交成功
+        W->>DB: 领取待发送通知
+        W->>N: HTTP POST，携带 Idempotency-Key
+        alt 通知服务可靠保存任务
+            N-->>W: HTTP 2xx
+            W->>DB: 标记 SENT
+        else 网络异常或非 2xx
+            W->>DB: 保留任务，30 秒后使用同一幂等键重试
+        end
+    else 重复事件
+        DB-->>P: 已处理，不再创建通知任务
+    end
+
+    opt 启用了抓拍且平台接入证据展示
+        D->>B: /event ALARM_EVIDENCE READY（关联 E1）
+        B->>P: 投递证据状态
+        P->>DB: 幂等更新证据，不生成告警通知
+        Note over D,P: 图片另经 /image 传输，并按抓拍协议确认
+    end
+
+    opt 重连后仍有活动告警
+        D->>B: /3A SYNCED（alarmId=A，新 eventId=E2）
+        B->>P: 投递状态同步
+        P->>DB: 去重、同步状态，不生成通知
+    end
+
+    opt 满足恢复条件
+        D->>B: /3A RECOVERED（alarmId=A，新 eventId=E3）
+        B->>P: 投递恢复事件
+        P->>DB: 去重、关闭告警；已知活动告警才创建恢复通知
+        Note over W,N: 恢复通知走相同后台发送流程
+    end
+```
+
+图中以首次触发为例；等级升级和取消等按下方[通知策略](#告警通知与防重复)处理。PUBACK 与平台接收的先后顺序不作保证，证据和告警也可能交错到达。`SENT` 只表示 Webhook 返回成功，不代表短信或电话已经送达；实际发送端仍须幂等。
+
 ### 三个主题，不是三次告警
 
 | 默认主题 | 内容 | 平台用途 |
@@ -142,23 +198,6 @@ java -cp target/vdm-mqtt-consumer-1.0.0.jar com.inteagle.examples.vdm.AlarmRpc -
 ## 告警通知与防重复
 
 `3A` 是告警状态变化流，不等于“每收到一条就通知一次”。MQTT QoS 1 是至少一次投递；网络断开时设备保留未获 Broker PUBACK 的告警，重连后重发，并用 `SYNCED` 同步仍然活动的告警。客户平台必须先持久化去重和更新告警生命周期，再异步发送短信、电话或 App 推送。
-
-完整因果关系如下：
-
-```mermaid
-flowchart LR
-    A[设备产生状态变化] --> B[发布 3A / QoS 1]
-    B --> C{客户平台是否处理过<br/>deviceId + eventId}
-    C -->|是| D[重复投递：忽略]
-    C -->|否| E[写入事件并更新<br/>deviceId + alarmId 状态]
-    E --> F{transition 通知策略}
-    F -->|TRIGGERED / ESCALATED| G[写入通知 outbox]
-    F -->|SYNCED / DEESCALATED| H[只更新状态]
-    F -->|RECOVERED / CANCELLED| I[关闭生命周期；已知活动告警才通知]
-    G --> J[事务提交后异步发送]
-    I --> J
-    B -. 断线后同一 eventId 重发 .-> C
-```
 
 推荐的默认通知策略：
 
