@@ -61,6 +61,17 @@ enum TargetModel {
   TARGET_MODEL_T200 = 5;
 }
 
+// 设备整体工作状态；独立于测量任务状态，不复用固件内部状态码。
+enum DeviceStatus {
+  DEVICE_STATUS_UNSPECIFIED = 0;
+  DEVICE_STATUS_INITIALIZING = 1;
+  DEVICE_STATUS_MEASURING = 2;
+  DEVICE_STATUS_IDLE = 3;
+  DEVICE_STATUS_TESTING = 4;
+  DEVICE_STATUS_CALIBRATING = 5;
+  DEVICE_STATUS_SLEEPING = 6;
+}
+
 // attributes 上报的测量状态。
 enum MeasurementStatus {
   MEASUREMENT_STATUS_UNSPECIFIED = 0;
@@ -168,6 +179,7 @@ message Attributes {
   optional bool show_timestamp = 10;
   optional bool show_sensor_id = 11;
   optional TargetList target_list = 12;
+  optional DeviceStatus device_status = 13;
 }
 
 // DynamicValue 仅用于文档明确允许的扩展字段。已知的 RPC、遥测、属性和告警字段
@@ -685,6 +697,14 @@ message ListAlarmHistoryRequest {
   optional string cursor = 1;
   optional uint32 limit = 2;
   optional string alarm_id = 3; // Decimal uint64 text, matching JSON.
+  optional uint32 page = 4;
+  optional uint32 page_size = 5;
+}
+
+message ListAlarmEventsRequest {
+  optional uint32 page = 1;
+  optional uint32 page_size = 2;
+  optional string alarm_id = 3;
 }
 
 message RpcRequest {
@@ -728,6 +748,7 @@ message RpcRequest {
     ApplyAlarmRulesRequest apply_alarm_rules = 92;
     GetAlarmStateRequest get_alarm_state = 93;
     ListAlarmHistoryRequest list_alarm_history = 94;
+    ListAlarmEventsRequest list_alarm_events = 98;
     SyncTelemetryRequest sync_telemetry = 95;
     TelemetrySyncJobRequest get_sync_status = 96;
     TelemetrySyncJobRequest cancel_sync = 97;
@@ -892,6 +913,27 @@ message AlarmHistoryIncident {
 message ListAlarmHistoryResponse {
   repeated AlarmHistoryIncident items = 1;
   optional string next_cursor = 2;
+  optional uint32 total = 3;
+  optional uint32 page = 4;
+  optional uint32 page_size = 5;
+}
+
+message AlarmHistoryEvent {
+  string event_id = 1;
+  string alarm_id = 2;
+  uint32 rule_id = 3;
+  AlarmType alarm_type = 4;
+  optional AlarmLevel level = 5;
+  AlarmTransition transition = 6;
+  uint64 timestamp = 7; // UTC Unix milliseconds, preserving stored event time.
+  optional AlarmHistoryDetail detail = 8;
+}
+
+message ListAlarmEventsResponse {
+  repeated AlarmHistoryEvent items = 1;
+  uint32 total = 2;
+  uint32 page = 3;
+  uint32 page_size = 4;
 }
 
 // code != 0 时不设置 response。当前版本只传数值错误码，message 保留字段号用于兼容
@@ -940,6 +982,7 @@ message RpcResponse {
     ApplyAlarmRulesResponse apply_alarm_rules = 92;
     GetAlarmStateResponse get_alarm_state = 93;
     ListAlarmHistoryResponse list_alarm_history = 94;
+    ListAlarmEventsResponse list_alarm_events = 98;
     DynamicObjectResponse sync_telemetry = 95;
     DynamicObjectResponse get_sync_status = 96;
     DynamicObjectResponse cancel_sync = 97;
