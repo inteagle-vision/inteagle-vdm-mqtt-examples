@@ -4,6 +4,17 @@
 
 同一份 Starter 支持 **Spring Boot 3.5.16 GA / 4.1.2**，已验证 JDK 17 / 21，最低要求 JDK 17。默认使用 Spring `ThreadPoolTaskExecutor`；JDK 21+ 可设置 `spring.threads.virtual.enabled=true` 使用虚拟线程，也可注入自定义执行器。各执行方式均保持同设备消息顺序和有界队列，详见[业务回调配置](docs/integration.md#业务回调与持久化边界)。
 
+## 首次构建：确认当前目录
+
+仓库根目录是同时包含 `java/`、`proto/` 和 `README.md` 的目录。根据终端当前目录选择一条命令：
+
+| 终端当前目录 | 完整构建并安装 SDK、Starter 和示例 |
+| --- | --- |
+| 仓库根目录 | `mvn -f java/pom.xml clean install` |
+| 已进入 `java/` 目录 | `mvn clean install` |
+
+构建会自动生成 Protobuf Java 类，无需手动运行 protoc。出现 `java/java/pom.xml` 不存在时，说明已经位于 `java/`，直接执行 `mvn clean install`。下文其他命令默认从仓库根目录执行。
+
 ## 按业务选择
 
 完整代码集中在一个 [VdmBusinessExample 组件](example/src/main/java/com/inteagle/examples/boot/VdmBusinessExample.java)，按需使用：
@@ -56,9 +67,13 @@ SnapshotReceipt receipt = gateway.device(deviceId).requestSnapshot();
 
 **SDK / Starter 尚未发布到 Maven Central。** 首先从本仓库安装到本机 Maven 仓库；其他电脑和 CI 也需安装，或使用团队私服。
 
+若已完成上方完整构建，可直接引入依赖。只安装 Starter 及其依赖时，在仓库根目录执行：
+
 ```bash
 mvn -f java/pom.xml -pl spring-boot-starter -am install
 ```
+
+如果终端已位于 `java/`，对应命令是 `mvn -pl spring-boot-starter -am install`。
 
 ```xml
 <dependency>

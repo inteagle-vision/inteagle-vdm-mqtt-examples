@@ -5,11 +5,14 @@
 ## IDEA 首次运行
 
 1. 打开仓库根目录，将 `java/pom.xml` 添加为 Maven 项目，使用 JDK 17+。
-2. **先生成并编译 Protobuf 类**：在仓库根目录执行下面命令，然后在 IDEA 点击 **Reload All Maven Projects**。
+2. **先生成并编译 Protobuf 类**：按终端当前目录选择一条命令，然后在 IDEA 点击 **Reload All Maven Projects**。
 
-```bash
-mvn -f java/pom.xml -pl example -am compile
-```
+| 终端当前目录 | 命令 |
+| --- | --- |
+| 仓库根目录（包含 `java/` 和 `proto/`） | `mvn -f java/pom.xml -pl example -am compile` |
+| 已进入 `java/` 目录 | `mvn -pl example -am compile` |
+
+若已经执行过完整的 `clean install`，无需再单独执行 `compile`。`java/java/pom.xml` 不存在表示当前已在 `java/`，应使用第二行命令。
 
 生成位置是 `java/sdk/target/generated-sources/protobuf/java`，Maven 已显式注册为源码目录。`com.inteagle.vdm.mqtt.v1` 不存在时先检查这一步；首次检出、`mvn clean` 后，IDEA 自身的 Java 编译不会自动执行 protoc。
 
