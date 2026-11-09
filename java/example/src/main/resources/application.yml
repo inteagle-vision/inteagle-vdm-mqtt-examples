@@ -1,0 +1,17 @@
+spring:
+  config:
+    import: optional:file:./vdm-example-local.properties
+  main:
+    web-application-type: none
+    keep-alive: true
+vdm:
+  mqtt:
+    host: ${MQTT_HOST}
+    port: ${MQTT_PORT:1883}
+    username: ${MQTT_USERNAME:}
+    password: ${MQTT_PASSWORD:}
+    # 平台默认接收多设备，来源 ID 由 Topic 解析。
+    all-devices: true
+    payload-format: ${VDM_PAYLOAD_FORMAT:protobuf}
+    # 默认只订阅位移所在的 telemetry，不订阅图片、告警或 RPC。
+    subscriptions: [telemetry]

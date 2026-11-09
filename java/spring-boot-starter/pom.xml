@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.inteagle.vdm</groupId>
+    <artifactId>vdm-mqtt-parent</artifactId>
+    <version>1.0.0</version>
+  </parent>
+  <artifactId>vdm-mqtt-spring-boot-starter</artifactId>
+  <name>Inteagle VDM MQTT Spring Boot Starter</name>
+  <description>Dependency entry point for integrating VDM devices into Spring Boot applications.</description>
+  <properties>
+    <maven.javadoc.skip>true</maven.javadoc.skip>
+  </properties>
+  <dependencies>
+    <dependency>
+      <groupId>com.inteagle.vdm</groupId>
+      <artifactId>vdm-mqtt-paho</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>com.inteagle.vdm</groupId>
+      <artifactId>vdm-mqtt-spring-boot-autoconfigure</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter</artifactId>
+    </dependency>
+  </dependencies>
+  <profiles>
+    <profile>
+      <id>release</id>
+      <build>
+        <plugins>
+          <!-- Starter 仅聚合依赖，没有 Java API；文档附件说明各 API 所在模块。 -->
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-jar-plugin</artifactId>
+            <version>3.5.1</version>
+            <executions>
+              <execution>
+                <id>starter-javadoc</id>
+                <goals>
+                  <goal>jar</goal>
+                </goals>
+                <phase>package</phase>
+                <configuration>
+                  <classifier>javadoc</classifier>
+                  <classesDirectory>${project.build.outputDirectory}</classesDirectory>
+                  <includes>
+                    <include>META-INF/README.md</include>
+                    <include>META-INF/LICENSE</include>
+                  </includes>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
+
+</project>

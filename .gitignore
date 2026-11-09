@@ -26,3 +26,12 @@ go/generated/
 
 # Captures received from real devices
 /evidence/
+
+# Local Java example data
+/images/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+
+# IDEA / command-line example private connection configuration
+vdm-example-local.properties

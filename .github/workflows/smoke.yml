@@ -37,3 +37,41 @@ jobs:
       - uses: actions/checkout@v7
       - name: Verify Protobuf and JSON examples
         run: ./tests/run_smoke.sh all
+
+  java-starter:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      matrix:
+        boot: ['3.5.16', '4.1.2']
+        java: ['17', '21']
+    services:
+      mqtt:
+        image: emqx:5.8.8
+        ports:
+          - 18895:1883
+        options: >-
+          --health-cmd "emqx ctl status"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+          cache: maven
+      - name: Build the same Starter artifacts on the baseline
+        run: mvn -B -ntp -f java/pom.xml clean install -Dvdm.test.mqtt.port=18895
+      - name: Test installed Starter in an independent application
+        run: mvn -B -ntp -f java/compatibility-tests/pom.xml -Dspring-boot.version=${{ matrix.boot }} test -Dvdm.test.mqtt.port=18895
+      - name: Validate local publication bundle without signing or uploading
+        if: matrix.java == '17' && matrix.boot == '3.5.16'
+        run: mvn -B -ntp -f java/pom.xml -pl spring-boot-starter -am -Prelease -DskipTests -Dgpg.skip=true -Dcentral.skipUpload=true deploy
+      - name: Export resolved runtime dependencies
+        run: |
+          mvn -B -ntp -f java/pom.xml dependency:list -DincludeScope=runtime -DoutputFile=target/runtime-dependencies.txt
+          mvn -B -ntp -f java/compatibility-tests/pom.xml -Dspring-boot.version=${{ matrix.boot }} dependency:list -DincludeScope=runtime -DoutputFile=target/runtime-dependencies.txt
+      - name: Check known runtime dependency advisories
+        run: python3 .github/scripts/audit-java-dependencies.py --output java/target/dependency-audit.json

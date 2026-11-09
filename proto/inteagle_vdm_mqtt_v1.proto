@@ -118,8 +118,12 @@ message TargetList {
 message TargetDisplacementSeries {
   string target_id = 1;
   reserved 2, 5 to 8;
+  // X 方向样本，单位 mm。未上报时 Java getDxList() 返回空列表，不能补成 0。
   repeated float dx = 3 [packed = true];
+  // Y 方向样本，单位 mm。未上报时 Java getDyList() 返回空列表，不能补成 0。
   repeated float dy = 4 [packed = true];
+  // Z 方向样本，单位 mm。不支持、未配置或本批无数据时为空；Java getDzList() 返回非 null 的空列表，
+  // getDzCount() 为 0。空列表与 [0.0] 含义不同；不能据此单独判定设备永久不支持 Z 方向。
   repeated float dz = 9 [packed = true];
 }
 

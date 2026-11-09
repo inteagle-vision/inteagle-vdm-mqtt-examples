@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.inteagle.vdm</groupId>
+    <artifactId>vdm-mqtt-parent</artifactId>
+    <version>1.0.0</version>
+  </parent>
+  <artifactId>vdm-mqtt-paho</artifactId>
+  <name>Inteagle VDM MQTT Paho Adapter</name>
+  <description>Eclipse Paho transport adapters, including reuse of an existing MQTT connection.</description>
+  <dependencies>
+    <dependency>
+      <groupId>com.inteagle.vdm</groupId>
+      <artifactId>vdm-mqtt-sdk</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.eclipse.paho</groupId>
+      <artifactId>org.eclipse.paho.client.mqttv3</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+</project>

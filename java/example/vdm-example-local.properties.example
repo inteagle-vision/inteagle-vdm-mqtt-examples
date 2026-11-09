@@ -1,0 +1,11 @@
+# 复制到仓库根目录 vdm-example-local.properties，已由 .gitignore 忽略。
+# 不要把真实凭据写回此模板或共享 .run 文件。
+MQTT_HOST=localhost
+MQTT_PORT=1883
+MQTT_USERNAME=
+MQTT_PASSWORD=
+VDM_PAYLOAD_FORMAT=protobuf
+# 按业务选择：telemetry / image / attributes,rpc/resp / image,rpc/resp
+vdm.mqtt.subscriptions=telemetry
+# 需要示例 SQLite 保存位移时才开启；系统已有数据库可直接使用自己的存储。
+demo.storage.enabled=false
