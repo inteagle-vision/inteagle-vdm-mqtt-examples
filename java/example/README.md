@@ -18,6 +18,8 @@ mvn -f java/pom.xml -pl example -am compile
 
 应用持续运行，点击 Stop 退出。命令行也可运行 `./java/run-spring-boot.sh`，脚本自动完成构建和协议生成。
 
+JDK 21+ 可在本地配置中增加 `spring.threads.virtual.enabled=true` 启用虚拟线程。JDK 17 使用默认线程池即可；两种方式都保持同设备消息顺序。
+
 ## 只配置需要的订阅
 
 公共配置只有一份 `application.yml`，不需要 profile 或另一个 main。在本地配置中设置：

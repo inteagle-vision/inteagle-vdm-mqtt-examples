@@ -1,6 +1,8 @@
 # VDM 业务 SDK 使用
 
-面向系统集成商，接收 VDM 位移、图片，查询标靶和调用设备服务。Spring Boot Starter 负责连接与订阅，业务使用 SDK 接口。默认推荐 **Protobuf**，同时支持 JSON；JDK 17+，Spring Boot 3.5.16 GA / 4.1.2。
+面向系统集成商，接收 VDM 位移、图片，查询标靶和调用设备服务。Spring Boot Starter 负责连接与订阅，业务使用 SDK 接口。默认推荐 **Protobuf**，同时支持 JSON。
+
+同一份 Starter 支持 **Spring Boot 3.5.16 GA / 4.1.2**，已验证 JDK 17 / 21，最低要求 JDK 17。默认使用 Spring `ThreadPoolTaskExecutor`；JDK 21+ 可设置 `spring.threads.virtual.enabled=true` 使用虚拟线程，也可注入自定义执行器。各执行方式均保持同设备消息顺序和有界队列，详见[业务回调配置](docs/integration.md#业务回调与持久化边界)。
 
 ## 按业务选择
 
@@ -93,3 +95,5 @@ mvn -f java/compatibility-tests/pom.xml -Dspring-boot.version=4.1.2 test
 ```
 
 兼容测试消费上一步安装的同一份 JAR；版本可改为 `3.5.16`。真实 MQTT 集成测试默认跳过，维护者使用隔离的本机 Broker 并加 `-Dvdm.test.mqtt.port=18895` 启用。CI 运行 JDK 17/21 与两个 Boot 版本的兼容矩阵及运行时依赖审计。
+
+许可证：[Apache-2.0](../LICENSE)。
