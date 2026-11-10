@@ -95,6 +95,10 @@ vdm:
 
 认证通过 `vdm.mqtt.username/password` 的外部配置提供。格式默认 protobuf；JSON 设备设置 `payload-format: json`。消费 SDK 无需安装 protoc，协议类已经包含在 JAR 中。
 
+`subscriptions` 可省略，默认只接收 telemetry；图片和属性等按需增加，完整取值见[订阅配置](docs/integration.md#按需订阅)。配置可直接放在 YAML 或 properties 中，示例的本地 properties 文件是可选项。
+
+Starter 自动创建默认 Paho 传输、Gateway 并管理连接生命周期；Paho 库本身不负责 Spring 自动装配。已有 MQTT 连接可[显式复用 Paho Bean](docs/integration.md#复用已有的-paho-bean)，也可提供自己的 `VdmMqttTransport`。
+
 应用项目的 `dependencyManagement` 可能覆盖 SDK 的传递依赖版本；使用已有 Spring Boot BOM 时，按[兼容工程 POM](compatibility-tests/pom.xml)中的 Jackson / Log4j 版本约束检查实际依赖，避免降回旧版。SDK 使用的 Jackson 2 与 Boot 4 默认 Jackson 3 并存，不替换应用的全局 JSON Mapper。
 
 运行仓库源码前须由 Maven 生成 Protobuf Java 类；首次 IDEA 构建和点击启动见 [example](example/README.md#idea-首次运行)。标准通配符、动态订阅、复用已有 MQTT Bean、自定义线程池 / JDK 21 虚拟线程和其他 RPC 见[集成说明](docs/integration.md)。需要数据落库或告警时再阅读 [SQLite](docs/storage.md)、[告警](docs/alarms.md)。

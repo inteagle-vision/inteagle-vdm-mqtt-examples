@@ -41,7 +41,11 @@ public class VdmMqttProperties {
   private int qos = 1;
   private Duration connectTimeout = Duration.ofSeconds(10);
 
-  /** Topic 后缀；图片填 image，RPC 必须显式增加 rpc/resp。 */
+  /**
+   * 平台接收的 Topic 后缀列表，省略时仅订阅 telemetry；显式配置会替换默认值，不能填空列表。按需选择
+   * telemetry、image、attributes、event、3A、rpc/resp，区分大小写。 RPC 请求由 SDK 发布到 rpc/req，不需要订阅；协议层仍允许订阅
+   * rpc/req 或 # 观察下行消息。YAML 使用列表，properties 使用逗号分隔。完整 Topic 过滤器使用 topic-filters，该模式不追加默认 telemetry。
+   */
   private List<String> subscriptions = List.of("telemetry");
 
   /** false 时仅创建客户端，适用于离线测试；业务自行调用 start()。 */

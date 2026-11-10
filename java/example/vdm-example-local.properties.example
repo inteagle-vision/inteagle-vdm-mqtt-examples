@@ -1,11 +1,15 @@
-# 复制到仓库根目录 vdm-example-local.properties，已由 .gitignore 忽略。
+# 可选配置模板；也可以直接使用 application.yml、环境变量或启动参数。
+# 如需使用，复制到运行工作目录并命名为 vdm-example-local.properties，已由 .gitignore 忽略。
+# 共享 VDM Example 配置使用仓库根目录；从 java/ 运行时放在 java/ 下。
 # 不要把真实凭据写回此模板或共享 .run 文件。
 MQTT_HOST=localhost
 MQTT_PORT=1883
 MQTT_USERNAME=
 MQTT_PASSWORD=
 VDM_PAYLOAD_FORMAT=protobuf
-# 按业务选择：telemetry / image / attributes,rpc/resp / image,rpc/resp
+# Topic 后缀列表，逗号分隔；不填写默认 telemetry，显式配置会替换默认列表。
+# 例如 telemetry,image,attributes；主动调用 RPC 再加入 rpc/resp。
+# 不同设备使用不同订阅时改用完整的 vdm.mqtt.topic-filters，详见 README。
 vdm.mqtt.subscriptions=telemetry
 # 需要示例 SQLite 保存位移时才开启；系统已有数据库可直接使用自己的存储。
 demo.storage.enabled=false

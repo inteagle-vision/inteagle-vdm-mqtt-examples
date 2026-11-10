@@ -229,6 +229,8 @@ public final class VdmMqttClient implements AutoCloseable {
   /**
    * 编码公开 RPC、发布请求，并等待匹配的响应；无论成功失败都会移除 pending 记录。
    *
+   * <p>平台向所选设备的 vdm/{deviceId}/rpc/req 发布请求，订阅 rpc/resp 接收设备响应；无需订阅 rpc/req。
+   *
    * @param method 公开方法名，例如 getAttr，不接受设备内部命令
    * @param params 当前 Payload 格式对应的参数，空参数可传 Map.of()
    * @param reqId 0 表示自动分配；非零值必须在当前客户端的在途请求中唯一

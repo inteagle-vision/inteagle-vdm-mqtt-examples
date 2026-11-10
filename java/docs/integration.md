@@ -4,6 +4,8 @@ Starter 面向系统集成商接入 VDM 设备。默认推荐 Protobuf，JSON �
 
 ## 按需订阅
 
+`vdm.mqtt.subscriptions` 是 Topic 后缀列表，**省略时默认 `[telemetry]`**。设置 `all-devices: true` 时，`[telemetry, image]` 生成 `vdm/+/telemetry` 和 `vdm/+/image`；使用 `device-id` 或 `device-ids` 时，将 `+` 换成指定设备 ID。显式配置的列表替换默认值，不会自动追加 telemetry。
+
 | 需求 | subscriptions |
 | --- | --- |
 | 位移（默认） | `[telemetry]` |
@@ -12,9 +14,27 @@ Starter 面向系统集成商接入 VDM 设备。默认推荐 Protobuf，JSON �
 | 位移和图片 | `[telemetry, image]` |
 | 属性及告警 | `[attributes, "3A", event]` |
 | 告警抓拍与确认 | `[image, event, rpc/resp]` |
-| 确实需要完整设备数据 | `["#"]` |
 
-MQTT Topic 区分大小写，告警后缀为 `3A`。`#` 还会收到平台下发的 `rpc/req`，一般优先列出需要的类型。
+MQTT Topic 区分大小写，告警后缀为 `3A`。以下从平台接入方的角度区分订阅与发布。
+
+平台按需订阅的设备上行消息如下；完整 Topic 过滤器应配置在 `topic-filters` 中：
+
+| 后缀 | 接收内容 |
+| --- | --- |
+| `telemetry` | 遥测，包含位移数据 |
+| `image` | 图片 |
+| `attributes` | 属性，包含标靶列表更新 |
+| `event` | 事件 |
+| `3A` | 告警 |
+| `rpc/resp` | 设备 RPC 响应，主动调用 RPC 时需要订阅 |
+
+`rpc/req` 是平台向设备**发布请求**的 Topic，不是平台调用 RPC 时需要订阅的消息；SDK 会发布到所选设备的 `vdm/{deviceId}/rpc/req`。平台账号需拥有该 Topic 的发布权限，以及 `rpc/resp` 的订阅权限。
+
+协议层也允许显式订阅 `rpc/req` 以观察下行请求，或使用 `["#"]` 接收全部后缀；这些不是常规平台接入所需的订阅。`#` 会同时收到请求和设备上报，不能理解成“只接收所有设备数据”。
+
+YAML 写作 `subscriptions: [telemetry, image, attributes]`，properties 写作 `vdm.mqtt.subscriptions=telemetry,image,attributes`，两者等价。不填写会使用默认值，显式填写空列表 `subscriptions: []` 则校验失败；希望先连接再动态订阅时使用 `topic-filters: []` 模式。
+
+订阅只决定接收范围，不会主动发送查询或拍照 RPC，也不改变设备的 JSON/Protobuf 格式。示例组件提供位移、图片和标靶接收分支；事件、告警等可按需要在自己的 `VdmMessageListener` 中处理。修改文件需重启应用，运行时变更使用下文的 `subscribe/unsubscribe`。
 
 ## 单设备与多设备
 
@@ -77,6 +97,11 @@ List<String> current = gateway.topicFilters();
 
 ## 调用其他设备 RPC
 
+| Topic | 消息方向 | 平台操作 |
+| --- | --- | --- |
+| `vdm/{deviceId}/rpc/req` | 平台 → 设备 | SDK 发布请求，无需订阅 |
+| `vdm/{deviceId}/rpc/resp` | 设备 → 平台 | 订阅并由 SDK 关联响应 |
+
 业务能力不限于示例展示的标靶和拍照。公开 RPC 统一通过指定设备的逻辑客户端调用：
 
 ```java
@@ -87,6 +112,10 @@ DecodedPayload response = gateway.device(deviceId)
 先订阅该设备的 `rpc/resp`；调用会等待匹配的响应，非成功返回码抛出 `RpcException`，超时不表示设备没有执行。`getTargets/requestSnapshot` 等专用接口封装常用业务；`call` 提供完整公开 RPC 能力。方法及参数以仓库 [Schema](../../proto/inteagle_vdm_mqtt_v1.proto) 和[公共协议](../../docs/protocol.md)为准，不调用设备内部方法。
 
 ## 复用已有的 Paho Bean
+
+Starter 默认自动装配 `PahoMqttTransport`、`VdmMqttGateway` 和连接生命周期，无需手动创建 Paho 客户端。自动装配由本 Starter 提供，`vdm-mqtt-paho` 模块本身是传输适配库。默认 `vdm.mqtt.enabled=true`、`auto-startup=true`；设为 `enabled=false` 可关闭整套自动装配。
+
+提供 `VdmMqttTransport` Bean 时默认 Paho 传输退让；提供自己的 `VdmMqttGateway` 或 `VdmMqttClient` Bean 时整套自动装配退让。仅有一个 `IMqttAsyncClient` Bean 不会自动被借用，需要显式包装如下。
 
 通过 `SharedPahoMqttTransport` 显式接入已有连接，注册传输 Bean：
 
